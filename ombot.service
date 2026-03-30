@@ -1,0 +1,28 @@
+[Unit]
+Description=Ombot Relay Service (WebSocket server, Bot side)
+After=network.target ombers-communicator.service
+
+[Service]
+Type=simple
+User=ombot
+Group=ombot
+WorkingDirectory=/opt/ombot/Ombot
+ExecStart=/usr/bin/node index.js
+Restart=on-failure
+RestartSec=5
+Environment=PORT=8082
+Environment=HEALTH_PORT=9090
+Environment=MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws
+Environment=OPENCLAW_DATA_DIR=/var/lib/ombot
+EnvironmentFile=-/etc/ombot/ombot.env
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/ombot /opt/ombot/Ombot
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
