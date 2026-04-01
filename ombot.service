@@ -1,6 +1,6 @@
 [Unit]
 Description=Ombot Relay Service (WebSocket server, Bot side)
-After=network.target ombers-communicator.service
+After=network.target ombers-communicator.service ombist-openclaw-gateway.service
 
 [Service]
 Type=simple
@@ -14,6 +14,13 @@ Environment=PORT=8082
 Environment=HEALTH_PORT=9090
 Environment=MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws
 Environment=OPENCLAW_DATA_DIR=/var/lib/ombot
+# Optional: merge OpenClaw Gateway (loopback) with Phone via Ombers — set in ombot.env
+# OPENCLAW_GATEWAY_BRIDGE=1
+# OPENCLAW_BRIDGE_AGENT_ID=default
+# OPENCLAW_BRIDGE_CONVERSATION_ID=default
+# OPENCLAW_BRIDGE_PARTICIPANT_ID=default
+# OPENCLAW_GATEWAY_URL=ws://127.0.0.1:18789
+# OPENCLAW_GATEWAY_TOKEN=
 EnvironmentFile=-/etc/ombot/ombot.env
 NoNewPrivileges=true
 ProtectSystem=full

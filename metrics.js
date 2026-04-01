@@ -51,6 +51,30 @@ export const capabilityRejectTotal = new client.Counter({
   registers: [register],
 });
 
+export const gatewayBridgeConnectState = new client.Gauge({
+  name: 'ombot_gateway_bridge_connected',
+  help: 'OpenClaw gateway bridge connected (1) or not (0)',
+  registers: [register],
+});
+
+export const gatewayBridgeErrorsTotal = new client.Counter({
+  name: 'ombot_gateway_bridge_errors_total',
+  help: 'Total gateway bridge protocol or I/O errors',
+  registers: [register],
+});
+
+export const gatewayBridgePhoneToGatewayTotal = new client.Counter({
+  name: 'ombot_gateway_bridge_phone_to_gateway_total',
+  help: 'User messages forwarded from Phone decrypt path to OpenClaw gateway',
+  registers: [register],
+});
+
+export const gatewayBridgeGatewayToPhoneTotal = new client.Counter({
+  name: 'ombot_gateway_bridge_gateway_to_phone_total',
+  help: 'Assistant replies forwarded from gateway to Phone encrypt path',
+  registers: [register],
+});
+
 export async function metricsText() {
   return register.metrics();
 }

@@ -137,6 +137,30 @@ npm start
 PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_MACHINE_SEED=my-secret node index.js
 ```
 
+## Headless 佈署（Ombist iOS SSH，嚴格 18789 封鎖）
+
+[tools/provision-headless.sh](tools/provision-headless.sh) 供 Ombist iOS「新增機器」經 SSH 在非互動環境安裝 **nvm + Node 22**、`openclaw@latest`、clone 本 repo，並切到 **system-level + ombot service user**：
+
+- OpenClaw 設定寫入 `/etc/ombot/openclaw.json`（`gateway.bind: loopback`，僅 `127.0.0.1:18789`）。
+- Ombot 環境寫入 `/etc/ombot/ombot.env`。
+- 建立 `systemd` 單元：`ombist-openclaw-gateway.service`、`ombist-ombot.service`（皆以 `User=ombot` 執行）。
+- 嘗試啟用主機防火牆（`ufw` / `iptables` / `nft`）封鎖外部入站 `tcp/18789`；若缺少工具，摘要會回 `warning=firewall_tool_missing`（降級安全模式）。
+- 腳本會輸出 `PROVISION_SUMMARY_BEGIN/END` 區段，含 `gateway_bind_ok`、service 狀態、`firewall_mode`，供 iOS 顯示成功或警告。
+
+必要環境變數：`RELAY_HOST`、`MACHINE_PORT`、`OPENCLAW_MACHINE_SEED`；可選 `MIDDLEWARE_SCHEME`（`ws`/`wss`）、`OMBOT_GIT_URL`、`MIDDLEWARE_AUTH_TOKEN`、`OPENCLAW_GATEWAY_TOKEN`。僅支援 **Linux**，且需 root 或 passwordless sudo。
+
+## OpenClaw Gateway 橋接（可選，與 Ombot 同進程）
+
+若要在**沒有**本機 ClawChat 客戶端連 `/ws` 的情況下，讓 **Phone（經 Ombers）↔ NaCl box** 與 **本機 OpenClaw Gateway（`127.0.0.1:18789`）** 互通，可啟用內建橋接模組：
+
+1. 確保 `ombist-openclaw-gateway.service` 已啟動且 Gateway 可連（預設 `ws://127.0.0.1:18789`）。
+2. 在 `/etc/ombot/ombot.env`（或 systemd `Environment=`）設定 **`OPENCLAW_GATEWAY_BRIDGE=1`**，並設定與手機端對話一致的 **`OPENCLAW_BRIDGE_AGENT_ID`**、`**OPENCLAW_BRIDGE_CONVERSATION_ID**`、`**OPENCLAW_BRIDGE_PARTICIPANT_ID**`（須與 App 內該對話的 `agentId` / `conversationId` / `participantId` 一致，否則 `sessionKey` 不同無法配對 Ombers）。
+3. 若 Gateway 啟用 token，設定 **`OPENCLAW_GATEWAY_TOKEN`**（與 `openclaw.json` / Gateway 設定一致）。
+
+行為摘要：Ombot 以 bridge 模式連上 Middleware；Phone 完成 box 握手後，解密得到的 `type: "req"` / `method: "agent"` / `params.message` 會轉成 Gateway 的 `req`（預設 `method` 為 `agent`，可由 `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` 覆寫）；Gateway 回傳的 `res` / `event` 會盡力抽出文字再以 `type: "res"` 加密回 Phone。**OpenClaw Gateway 協定版本差異**時請對照官方文件並鎖定 `openclaw` 版本；`connect.challenge` / device pairing 等進階流程可能需後續擴充。
+
+Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_total`、`ombot_gateway_bridge_phone_to_gateway_total`、`ombot_gateway_bridge_gateway_to_phone_total`。
+
 ## Health and Metrics
 
 - Health: `GET /healthz` on `HEALTH_PORT`
@@ -163,6 +187,17 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_MACHINE_SEED=my-secr
 | `OPENCLAW_MIN_PROTOCOL_VERSION` | `2` | Minimum supported client protocol version |
 | `OPENCLAW_ALLOW_LEGACY_PROTOCOL` | `0` | Whether clients below server protocol are allowed |
 | `OPENCLAW_REQUIRED_CAPABILITIES` | `signature,replay_guard` | Comma-separated client capabilities required at register time |
+| `OPENCLAW_GATEWAY_BRIDGE` | (unset / off) | Set `1` or `true` to enable in-process OpenClaw Gateway WebSocket client bridge |
+| `OPENCLAW_GATEWAY_URL` | `ws://127.0.0.1:18789` | Gateway WebSocket URL for the bridge |
+| `OPENCLAW_GATEWAY_TOKEN` | (empty) | Optional; sent as `connect.params.auth.token` |
+| `OPENCLAW_BRIDGE_AGENT_ID` | `default` | Must match Phone conversation `agentId` for sessionKey |
+| `OPENCLAW_BRIDGE_CONVERSATION_ID` | `default` | Must match Phone `conversationId` |
+| `OPENCLAW_BRIDGE_PARTICIPANT_ID` | `default` | Must match Phone `participantId` |
+| `OPENCLAW_BRIDGE_PHONE_METHOD` | `agent` | Phone `req.method` that carries user text |
+| `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` | `agent` | Gateway `req.method` for a model turn |
+| `OPENCLAW_BRIDGE_MIN_PROTOCOL` / `MAX_PROTOCOL` | `1` / `9` | Passed in `connect` params |
+| `OPENCLAW_BRIDGE_ROLE` | `operator` | `connect.params.role` |
+| `OPENCLAW_BRIDGE_REQ_TIMEOUT_MS` | `120000` | Per-turn timeout waiting for Gateway `res` |
 
 ## Protocol
 
