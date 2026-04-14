@@ -71,12 +71,14 @@ describe('mock gateway server handshake', () => {
           ws.send(JSON.stringify({ type: 'res', id: msg.id, ok: true, payload: {} }));
         }
         if (msg.type === 'req' && msg.method === 'agent') {
+          expect(msg.params.idempotencyKey).toBeTruthy();
+          expect(msg.params.agentId).toBeTruthy();
           ws.send(
             JSON.stringify({
               type: 'res',
               id: msg.id,
               ok: true,
-              payload: { text: `echo:${msg.params.message}` },
+              payload: { text: `echo:${msg.params.message}:${msg.params.agentId}` },
             })
           );
         }
@@ -105,7 +107,13 @@ describe('mock gateway server handshake', () => {
         type: 'req',
         id,
         method: 'connect',
-        params: { minProtocol: 1, maxProtocol: 9, client: { id: 't' }, role: 'operator' },
+        params: {
+          minProtocol: 1,
+          maxProtocol: 9,
+          client: { id: 't' },
+          role: 'operator',
+          scopes: ['operator.read', 'operator.write'],
+        },
       })
     );
 
@@ -120,12 +128,12 @@ describe('mock gateway server handshake', () => {
         type: 'req',
         id: id2,
         method: 'agent',
-        params: { message: 'hello' },
+        params: { message: 'hello', idempotencyKey: id2, agentId: 'default' },
       })
     );
     const res2 = await nextJson();
     expect(res2.ok).toBe(true);
-    expect(res2.payload.text).toBe('echo:hello');
+    expect(res2.payload.text).toBe('echo:hello:default');
 
     ws.close();
     await new Promise((r) => wss.close(r));

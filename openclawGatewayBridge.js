@@ -12,6 +12,20 @@ function makeReqId() {
   return `ombot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/** Minimal operator scopes to call `agent` without operator.admin (model via preconfigured agents only). */
+function defaultGatewayBridgeScopes() {
+  const raw = (process.env.OPENCLAW_BRIDGE_OPERATOR_SCOPES || '').trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.every((s) => typeof s === 'string')) return parsed;
+    } catch {
+      /* fall through */
+    }
+  }
+  return ['operator.read', 'operator.write'];
+}
+
 /**
  * Extract user text from Phone-side decrypted ClawChat JSON.
  * @param {object} j
@@ -74,6 +88,11 @@ export class OpenClawGatewayBridge {
     this.gatewayUrl = (process.env.OPENCLAW_GATEWAY_URL || 'ws://127.0.0.1:18789').trim();
     this.gatewayToken = (process.env.OPENCLAW_GATEWAY_TOKEN || '').trim();
     this.agentMethod = (process.env.OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD || 'agent').trim();
+    this.defaultGatewayAgentId = (
+      process.env.OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID ||
+      process.env.OPENCLAW_BRIDGE_AGENT_ID ||
+      'default'
+    ).trim();
 
     /** @type {WebSocket | null} */
     this.gatewayWs = null;
@@ -190,6 +209,7 @@ export class OpenClawGatewayBridge {
         version: process.env.npm_package_version || '1.0.0',
       },
       role: (process.env.OPENCLAW_BRIDGE_ROLE || 'operator').trim(),
+      scopes: defaultGatewayBridgeScopes(),
     };
     if (this.gatewayToken) {
       params.auth = { token: this.gatewayToken };
@@ -311,7 +331,11 @@ export class OpenClawGatewayBridge {
         type: 'req',
         id,
         method: this.agentMethod,
-        params: { message: userText },
+        params: {
+          message: userText,
+          idempotencyKey: id,
+          agentId: this.defaultGatewayAgentId,
+        },
       };
       const timeout = setTimeout(() => {
         if (this._pending.has(id)) {

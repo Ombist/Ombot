@@ -157,7 +157,7 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_MACHINE_SEED=my-secr
 2. 在 `/etc/ombot/ombot.env`（或 systemd `Environment=`）設定 **`OPENCLAW_GATEWAY_BRIDGE=1`**，並設定與手機端對話一致的 **`OPENCLAW_BRIDGE_AGENT_ID`**、`**OPENCLAW_BRIDGE_CONVERSATION_ID**`、`**OPENCLAW_BRIDGE_PARTICIPANT_ID**`（須與 App 內該對話的 `agentId` / `conversationId` / `participantId` 一致，否則 `sessionKey` 不同無法配對 Ombers）。
 3. 若 Gateway 啟用 token，設定 **`OPENCLAW_GATEWAY_TOKEN`**（與 `openclaw.json` / Gateway 設定一致）。
 
-行為摘要：Ombot 以 bridge 模式連上 Middleware；Phone 完成 box 握手後，解密得到的 `type: "req"` / `method: "agent"` / `params.message` 會轉成 Gateway 的 `req`（預設 `method` 為 `agent`，可由 `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` 覆寫）；Gateway 回傳的 `res` / `event` 會盡力抽出文字再以 `type: "res"` 加密回 Phone。**OpenClaw Gateway 協定版本差異**時請對照官方文件並鎖定 `openclaw` 版本；`connect.challenge` / device pairing 等進階流程可能需後續擴充。
+行為摘要：Ombot 以 bridge 模式連上 Middleware；Phone 完成 box 握手後，解密得到的 `type: "req"` / `method: "agent"` / `params.message` 會轉成 Gateway 的 `req`（預設 `method` 為 `agent`，可由 `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` 覆寫）；每輪會帶 **`idempotencyKey`** 與 **`agentId`**（固定為 **`OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID`**；未設時等同 **`OPENCLAW_BRIDGE_AGENT_ID`**，預設 `default`）。`connect` 會送 **`scopes`**，預設 `operator.read` + `operator.write`，可經 `OPENCLAW_BRIDGE_OPERATOR_SCOPES` 覆寫為 JSON 陣列。預先於 `openclaw.json` 的 **`agents.list`** 為各 `agentId` 設定 model，無需在請求內覆寫 `provider`/`model`。Gateway 回傳的 `res` / `event` 會盡力抽出文字再以 `type: "res"` 加密回 Phone。**OpenClaw Gateway 協定版本差異**時請對照官方文件並鎖定 `openclaw` 版本；`connect.challenge` / device pairing 等進階流程可能需後續擴充。
 
 Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_total`、`ombot_gateway_bridge_phone_to_gateway_total`、`ombot_gateway_bridge_gateway_to_phone_total`。
 
@@ -197,6 +197,8 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` | `agent` | Gateway `req.method` for a model turn |
 | `OPENCLAW_BRIDGE_MIN_PROTOCOL` / `MAX_PROTOCOL` | `1` / `9` | Passed in `connect` params |
 | `OPENCLAW_BRIDGE_ROLE` | `operator` | `connect.params.role` |
+| `OPENCLAW_BRIDGE_OPERATOR_SCOPES` | (empty → `["operator.read","operator.write"]`) | JSON array of operator scopes on `connect` |
+| `OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID` | same as `OPENCLAW_BRIDGE_AGENT_ID` | Gateway `agent` params `agentId` on each turn |
 | `OPENCLAW_BRIDGE_REQ_TIMEOUT_MS` | `120000` | Per-turn timeout waiting for Gateway `res` |
 
 ## Protocol

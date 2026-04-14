@@ -167,12 +167,17 @@ fi
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
 
-if [[ -n "${OPENCLAW_AGENTS_DEFAULTS_MODEL_JSON_B64:-}" ]]; then
-  echo "ombist-provision: merging agents.defaults.model into OpenClaw config..."
+OMBIST_ROUTE_PATCH_B64="${OPENCLAW_ROUTE_PATCH_JSON_B64:-}"
+if [[ -z "${OMBIST_ROUTE_PATCH_B64}" && -n "${OPENCLAW_AGENTS_DEFAULTS_MODEL_JSON_B64:-}" ]]; then
+  OMBIST_ROUTE_PATCH_B64="${OPENCLAW_AGENTS_DEFAULTS_MODEL_JSON_B64}"
+fi
+
+if [[ -n "${OMBIST_ROUTE_PATCH_B64}" ]]; then
+  echo "ombist-provision: merging OpenClaw agents route patch into config..."
   OMBIST_PATCH_JSON="/tmp/ombist-agents-model-patch-$$.json"
   OMBIST_MERGED_JSON="/tmp/ombist-agents-model-out-$$.json"
   OMBIST_MERGE_JS="/tmp/ombist-agents-model-merge-$$.js"
-  printf '%s' "${OPENCLAW_AGENTS_DEFAULTS_MODEL_JSON_B64}" | base64 -d | as_root tee "${OMBIST_PATCH_JSON}" >/dev/null
+  printf '%s' "${OMBIST_ROUTE_PATCH_B64}" | base64 -d | as_root tee "${OMBIST_PATCH_JSON}" >/dev/null
   as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OMBIST_PATCH_JSON}"
   as_root chmod 640 "${OMBIST_PATCH_JSON}"
   as_root rm -f "${OMBIST_MERGED_JSON}"
@@ -216,6 +221,9 @@ fi
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
   echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
   echo "OPENCLAW_REQUIRE_MIDDLEWARE_TLS=${OPENCLAW_REQUIRE_MIDDLEWARE_TLS}"
+  if [[ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
+    echo "OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}"
+  fi
   if [[ -n "${MIDDLEWARE_AUTH_TOKEN:-}" ]]; then
     echo "MIDDLEWARE_AUTH_TOKEN=${MIDDLEWARE_AUTH_TOKEN}"
     echo "OMBERS_AUTH_TOKEN=${MIDDLEWARE_AUTH_TOKEN}"
