@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Strict headless install:
-# - openclaw gateway on 127.0.0.1:18789 only
-# - system-level services running as ombot user
+# Strict headless install (order):
+# 1) OpenClaw CLI (global npm) + loopback gateway unit
+# 2) Ombot repo + production deps
+# 3) OmbRouter: clone, build, npm -g, openclaw plugins install (plugin runs inside gateway)
+# 4) systemd: start gateway first, then Ombot (After= gateway)
 # - host firewall guard for 18789
 
 set -euo pipefail
@@ -10,10 +12,13 @@ set -euo pipefail
 : "${MACHINE_PORT:?MACHINE_PORT is required}"
 : "${OPENCLAW_MACHINE_SEED:?OPENCLAW_MACHINE_SEED is required}"
 
-MIDDLEWARE_SCHEME="${MIDDLEWARE_SCHEME:-ws}"
+# Default wss for production (TLS must terminate at Nginx or Ombers OMBERS_USE_TLS).
+# For loopback + plain Ombers only, override: MIDDLEWARE_SCHEME=ws OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0
+MIDDLEWARE_SCHEME="${MIDDLEWARE_SCHEME:-wss}"
 OMBOT_PORT="${OMBOT_PORT:-8082}"
 OMBOT_HEALTH_PORT="${OMBOT_HEALTH_PORT:-9090}"
 OMBOT_GIT_URL="${OMBOT_GIT_URL:-https://github.com/Ombist/Ombot.git}"
+OMBROUTER_GIT_URL="${OMBROUTER_GIT_URL:-https://github.com/Ombist/OmbRouter.git}"
 OPENCLAW_GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
 OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
 NVM_VERSION="${NVM_VERSION:-v0.40.1}"
@@ -23,6 +28,7 @@ OMBOT_GROUP="${OMBOT_GROUP:-ombot}"
 OMBOT_HOME="${OMBOT_HOME:-/home/${OMBOT_USER}}"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/ombot}"
 OMBOT_REPO_DIR="${INSTALL_ROOT}/Ombot"
+OMBROUTER_REPO_DIR="${OMBROUTER_REPO_DIR:-${INSTALL_ROOT}/OmbRouter}"
 OMBOT_DATA_DIR="${OMBOT_DATA_DIR:-/var/lib/ombot}"
 OMBOT_BIN_DIR="${INSTALL_ROOT}/bin"
 NPM_PREFIX="${INSTALL_ROOT}/npm-global"
@@ -107,6 +113,27 @@ else
   run_as_ombot "git clone --depth 1 '${OMBOT_GIT_URL}' '${OMBOT_REPO_DIR}'"
 fi
 run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; npm --prefix '${OMBOT_REPO_DIR}' install --omit=dev"
+
+echo "ombist-provision: cloning/building OmbRouter and registering OpenClaw plugin..."
+if as_root test -d "${OMBROUTER_REPO_DIR}/.git"; then
+  run_as_ombot "git -C '${OMBROUTER_REPO_DIR}' pull --ff-only || true"
+else
+  as_root rm -rf "${OMBROUTER_REPO_DIR}"
+  run_as_ombot "git clone --depth 1 '${OMBROUTER_GIT_URL}' '${OMBROUTER_REPO_DIR}'"
+fi
+run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
+export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
+export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
+cd '${OMBROUTER_REPO_DIR}' && npm install && npm run build && npm install -g ."
+run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
+export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
+export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
+cd '${OMBROUTER_REPO_DIR}' && \
+if command -v timeout >/dev/null 2>&1; then \
+  timeout 300 openclaw plugins install . --force || timeout 300 openclaw plugins install .; \
+else \
+  openclaw plugins install . --force || openclaw plugins install .; \
+fi"
 
 # Optional: seed OpenClaw agent workspace (*.md) from env OPENCLAW_WS_*_B64
 OPENCLAW_WORKSPACE_DIR="${OMBOT_HOME}/.openclaw/workspace"
@@ -309,9 +336,19 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
-echo "ombist-provision: enabling services..."
+echo "ombist-provision: enabling services (start: OpenClaw gateway → Ombot; OmbRouter runs inside gateway)..."
 as_root systemctl daemon-reload
-as_root systemctl enable --now ombist-openclaw-gateway.service ombist-ombot.service
+as_root systemctl enable ombist-openclaw-gateway.service ombist-ombot.service
+as_root systemctl start ombist-openclaw-gateway.service
+for _i in {1..45}; do
+  if as_root systemctl is-active --quiet ombist-openclaw-gateway.service 2>/dev/null; then
+    if as_root ss -ltn 2>/dev/null | grep -q "127.0.0.1:${OPENCLAW_GATEWAY_PORT}"; then
+      break
+    fi
+  fi
+  sleep 1
+done
+as_root systemctl start ombist-ombot.service
 
 echo "ombist-provision: applying firewall guard for tcp/${OPENCLAW_GATEWAY_PORT}..."
 if command -v ufw >/dev/null 2>&1; then
@@ -345,6 +382,7 @@ echo "gateway_port=${OPENCLAW_GATEWAY_PORT}"
 echo "gateway_bind_ok=${BIND_OK}"
 echo "gateway_state=${GW_STATE}"
 echo "ombot_state=${OMBOT_STATE}"
+echo "ombrouter_repo=${OMBROUTER_REPO_DIR}"
 echo "middleware_ws_url=${MW_URL}"
 echo "firewall_mode=${FW_MODE}"
 if [[ -n "${FW_WARNING}" ]]; then

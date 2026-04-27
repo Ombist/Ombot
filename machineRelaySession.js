@@ -326,11 +326,15 @@ export class MachineRelaySession {
     if (this.middlewareWs || !this.isClientConnected()) return;
     const url = this.middlewareUrlWithOptionalQuery();
     const token = this.config.MIDDLEWARE_AUTH_TOKEN;
-    const wsOpts =
-      token && !this.authRetryWithQuery
-        ? { headers: { Authorization: `Bearer ${token}` } }
-        : undefined;
-    this.middlewareWs = wsOpts ? new WebSocket(url, wsOpts) : new WebSocket(url);
+    /** @type {import('ws').ClientOptions} */
+    const wsOpts = {};
+    if (token && !this.authRetryWithQuery) {
+      wsOpts.headers = { Authorization: `Bearer ${token}` };
+    }
+    if (this.config.middlewareHttpsAgent) {
+      wsOpts.agent = this.config.middlewareHttpsAgent;
+    }
+    this.middlewareWs = Object.keys(wsOpts).length ? new WebSocket(url, wsOpts) : new WebSocket(url);
 
     this.middlewareWs.on('open', () => {
       this.reconnectAttempt = 0;

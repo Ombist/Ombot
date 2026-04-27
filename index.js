@@ -8,6 +8,7 @@ import {
   metricsText,
   relayErrorsTotal,
 } from './metrics.js';
+import { createMiddlewareHttpsAgent } from './middlewareTlsAgent.js';
 import { MachineRelaySession } from './machineRelaySession.js';
 import {
   shouldStartGatewayBridge,
@@ -55,6 +56,8 @@ logger.info('security_posture', {
   signatureRequired: REQUIRE_CLIENT_SIGNATURE,
 });
 
+const middlewareHttpsAgent = createMiddlewareHttpsAgent();
+
 const sessionConfig = {
   MIDDLEWARE_WS_URL,
   MIDDLEWARE_AUTH_TOKEN,
@@ -66,6 +69,7 @@ const sessionConfig = {
   MIN_PROTOCOL_VERSION,
   ALLOW_LEGACY_PROTOCOL,
   REQUIRED_CAPABILITIES,
+  middlewareHttpsAgent,
 };
 
 let acceptingNewConnections = true;
@@ -178,11 +182,13 @@ wss.on('connection', (clientWs, req) => {
     }
   });
 
-  clientWs.on('close', () => {
+  clientWs.on('close', (code, reason) => {
     activeClientConnections.dec();
     rateWindow.delete(clientId);
     session.destroy();
-    writeAuditEvent('client_disconnected', { clientId });
+    const reasonStr = reason && reason.length ? reason.toString() : '';
+    logger.info('client_ws_close', { clientId, code, reason: reasonStr });
+    writeAuditEvent('client_disconnected', { clientId, code, reason: reasonStr });
   });
 
   clientWs.on('error', (err) => {

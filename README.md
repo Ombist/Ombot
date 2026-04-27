@@ -29,7 +29,7 @@ WebSocket relay with ED25519. Sits between the client app and the Middleware.
 
 **從 OpenClaw 或自建客戶端（本機 / 同網）**
 
-1. 連到 Machine 的 WS：`ws://<host>:8080/ws`（或直連 BOT 的 IP:port）。
+1. 連到 Ombot（Machine 端）的 WS：本機／內網常見 `ws://<host>:8080/ws`（或直連 BOT 的 IP:port）；若對外終止 TLS 則用 `wss://…`。**連到 Ombers（Middleware）** 的生產預設為 **`wss://`**（見下方 `MIDDLEWARE_WS_URL`）。
 2. 連上後送 **註冊**（金鑰交換），例如：
 
 ```json
@@ -133,8 +133,16 @@ npm run rotate:data-key
 
 ```bash
 npm start
-# or
-PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_MACHINE_SEED=my-secret node index.js
+# or (defaults match index.js: wss + TLS required)
+PORT=8080 MIDDLEWARE_WS_URL=wss://127.0.0.1:8081/ws OPENCLAW_MACHINE_SEED=my-secret node index.js
+```
+
+### 本機開發（Ombers 僅 plain `ws`、無 TLS）
+
+僅限 **127.0.0.1 / 受信網路**。須同時關閉對 Middleware 的 TLS 強制，否則程序會以 `middleware_tls_required` 退出：
+
+```bash
+PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0 OPENCLAW_MACHINE_SEED=my-secret node index.js
 ```
 
 ## Headless 佈署（Ombist iOS SSH，嚴格 18789 封鎖）
@@ -147,7 +155,7 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_MACHINE_SEED=my-secr
 - 嘗試啟用主機防火牆（`ufw` / `iptables` / `nft`）封鎖外部入站 `tcp/18789`；若缺少工具，摘要會回 `warning=firewall_tool_missing`（降級安全模式）。
 - 腳本會輸出 `PROVISION_SUMMARY_BEGIN/END` 區段，含 `gateway_bind_ok`、service 狀態、`firewall_mode`，供 iOS 顯示成功或警告。
 
-必要環境變數：`RELAY_HOST`、`MACHINE_PORT`、`OPENCLAW_MACHINE_SEED`；可選 `MIDDLEWARE_SCHEME`（`ws`/`wss`）、`OMBOT_GIT_URL`、`MIDDLEWARE_AUTH_TOKEN`、`OPENCLAW_GATEWAY_TOKEN`。僅支援 **Linux**，且需 root 或 passwordless sudo。
+必要環境變數：`RELAY_HOST`、`MACHINE_PORT`、`OPENCLAW_MACHINE_SEED`；可選 **`MIDDLEWARE_SCHEME`**（預設 **`wss`**；舊環境若 Ombers 前無 TLS，須明確設 `MIDDLEWARE_SCHEME=ws` 並確保 `OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0`）、`OMBOT_GIT_URL`、`MIDDLEWARE_AUTH_TOKEN`、`OPENCLAW_GATEWAY_TOKEN`。僅支援 **Linux**，且需 root 或 passwordless sudo。生產路徑請在 Ombers **MACHINE** 對外埠上 TLS（Nginx 終止或 `OMBERS_USE_TLS`），否則 `wss://` 無法握手。
 
 ## OpenClaw Gateway 橋接（可選，與 Ombot 同進程）
 
@@ -175,6 +183,9 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `HEALTH_PORT` | `PORT+1` | HTTP health/metrics port |
 | `MIDDLEWARE_WS_URL` | wss://127.0.0.1:8081/ws | Middleware **基底**（須以 `/ws` 結尾）；多路時會再連線至 `…/ws/<sessionKey>` |
 | `MIDDLEWARE_AUTH_TOKEN` | (empty) | 連到 Middleware 時的 Bearer token（優先走 `Authorization` header；失敗時可退回 query token） |
+| `MIDDLEWARE_TLS_CLIENT_CERT_PATH` | (empty) | 若 ingress 要求 **mTLS**：指向 **client** 憑證 PEM（與 key 成對設定；見 monorepo `Ombers_Communicator/docs/nginx-mtls-ingress.md`） |
+| `MIDDLEWARE_TLS_CLIENT_KEY_PATH` | (empty) | 若 ingress 要求 **mTLS**：指向 **client** 私鑰 PEM（檔案權限建議 `0400`，由 systemd `EnvironmentFile` 注入路徑） |
+| `MIDDLEWARE_TLS_CA_PATH` | (empty) | 選用；額外信任的 **server** CA bundle（例如內部 CA；未設時使用 Node 預設 trust store 驗證伺服器鏈） |
 | `OPENCLAW_MACHINE_SEED` | ombot-seed | Seed for server ED25519 key pair |
 | `OPENCLAW_DATA_DIR` | ./data | 金鑰與 Chatroom 儲存目錄 |
 | `OPENCLAW_KEY_ENCRYPTION_KEYS` | (empty) | Base64 32-byte keys, comma separated (`new,old`) for at-rest encryption |
@@ -200,6 +211,8 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_BRIDGE_OPERATOR_SCOPES` | (empty → `["operator.read","operator.write"]`) | JSON array of operator scopes on `connect` |
 | `OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID` | same as `OPENCLAW_BRIDGE_AGENT_ID` | Gateway `agent` params `agentId` on each turn |
 | `OPENCLAW_BRIDGE_REQ_TIMEOUT_MS` | `120000` | Per-turn timeout waiting for Gateway `res` |
+
+中繼 Nginx（WSS / mTLS）整體準備與切換：[docs/relay-nginx-mtls-prep.md](../docs/relay-nginx-mtls-prep.md)（含 PKI、staging、`optional`→`on`、iOS 決策與 rollback）。
 
 ## Protocol
 

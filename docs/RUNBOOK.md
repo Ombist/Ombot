@@ -78,3 +78,25 @@ echo | openssl s_client -servername "${MIDDLEWARE_HOST}" -connect "${MIDDLEWARE_
 **Client-side pinning note**
 
 - iOS may pin the **relay** leaf separately from Ombot→middleware trust; coordinate ingress rotation with [docs/ios-pin-rotation-calendar.md](../../docs/ios-pin-rotation-calendar.md).
+
+## Production WSS acceptance (Ombot ↔ Ombers)
+
+Use this checklist after changing ingress or Ombot env. Ombers must present **TLS on the MACHINE listen** that Ombot reaches (Nginx in front of loopback Ombers, or `OMBERS_USE_TLS=1`). When using Nginx, the port in **`MIDDLEWARE_WS_URL`** is often the **TLS** front port (not the plain Ombers `LISTEN` port); match whatever you pass as **`MACHINE_PORT`** to provisioning.
+
+1. **Ombers / ingress**
+   - From a host that mirrors production routing: `curl -fsSI "https://${RELAY_HOST}:${MACHINE_PORT}/health"` (or the health path your Nginx exposes on that TLS port) succeeds with a valid chain for that hostname.
+   - If the server uses a **private CA**, install trust on the Ombot host (OS store) or set **`MIDDLEWARE_TLS_CA_PATH`** (or `NODE_EXTRA_CA_CERTS` per above) so Node can verify the server certificate.
+
+2. **Ombot**
+   - `MIDDLEWARE_WS_URL=wss://${RELAY_HOST}:${MACHINE_PORT}/ws` and **`OPENCLAW_REQUIRE_MIDDLEWARE_TLS=1`** (or unset: anything other than `0` requires a `wss:` URL—see [README](../README.md)).
+   - Process starts without **`middleware_tls_required`** exit.
+   - Logs show successful middleware attach (e.g. **`middleware_connected`**).
+
+3. **Negative test (must fail fast)**
+   - Set **`MIDDLEWARE_WS_URL=ws://…`** while **`OPENCLAW_REQUIRE_MIDDLEWARE_TLS`** is **not** `0`. Ombot should **exit on startup** with `middleware_tls_required`. This confirms misconfiguration cannot silently downgrade to plaintext middleware.
+
+## mTLS client identity (Ombot to Ombers Nginx)
+
+When ingress requires **mutual TLS**, set **`MIDDLEWARE_TLS_CLIENT_CERT_PATH`** and **`MIDDLEWARE_TLS_CLIENT_KEY_PATH`** (and **`MIDDLEWARE_TLS_CA_PATH`** if the server chain is private CA). File permissions: prefer **`0400`** on the key; restrict directory listing. Rotate by deploying overlapping certs, restarting **`ombot.service`**, then validating **`middleware_connected`** before retiring old material.
+
+Cross-cutting prep (staging `optional` → `on`, dual-port symmetry, iOS gating, synthetic `curl --cert/--key` probes): [docs/relay-nginx-mtls-prep.md](../../docs/relay-nginx-mtls-prep.md).
