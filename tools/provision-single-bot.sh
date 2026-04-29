@@ -102,8 +102,26 @@ subjectAltName = @alt_names
 [alt_names]
 ${SAN_LINE}
 EOF
-as_root openssl x509 -req -in "${TLS_DIR}/server.csr" -CA "${TLS_DIR}/RootCA.crt" -CAkey "${TLS_DIR}/RootCA.key" \
-  -CAcreateserial -out "${TLS_DIR}/server.crt" -days 825 -sha256 -extfile "${TLS_DIR}/server.ext"
+
+# 由 CSR + Root CA 簽出 leaf（Nginx / TLS 實際使用 server.crt，唔使用 CSR）
+echo "ombist-provision-single-bot: TLS sign server.crt from CSR..."
+if ! as_root openssl x509 -req -in "${TLS_DIR}/server.csr" \
+  -CA "${TLS_DIR}/RootCA.crt" -CAkey "${TLS_DIR}/RootCA.key" \
+  -CAcreateserial -out "${TLS_DIR}/server.crt" -days 825 -sha256 \
+  -extfile "${TLS_DIR}/server.ext"; then
+  echo "ombist-provision-single-bot: openssl x509 signing failed (server.crt not created)" >&2
+  exit 1
+fi
+if [[ ! -s "${TLS_DIR}/server.crt" ]]; then
+  echo "ombist-provision-single-bot: server.crt missing or empty after signing" >&2
+  exit 1
+fi
+if ! as_root openssl x509 -in "${TLS_DIR}/server.crt" -noout -subject -ext subjectAltName >/dev/null 2>&1; then
+  echo "ombist-provision-single-bot: server.crt unreadable by openssl after write" >&2
+  exit 1
+fi
+echo "ombist-provision-single-bot: server.crt OK (leaf signed)"
+
 as_root chmod 640 "${TLS_DIR}/RootCA.key" "${TLS_DIR}/server.key"
 as_root chmod 644 "${TLS_DIR}/RootCA.crt" "${TLS_DIR}/server.crt"
 as_root chown root:root "${TLS_DIR}/RootCA.key" "${TLS_DIR}/server.key"
