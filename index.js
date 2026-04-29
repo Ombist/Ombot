@@ -36,6 +36,10 @@ const REQUIRED_CAPABILITIES = (process.env.OPENCLAW_REQUIRED_CAPABILITIES || 'si
   .map((x) => x.trim())
   .filter(Boolean);
 
+const SINGLE_CLIENT_MODE = ['1', 'true', 'yes'].includes(
+  String(process.env.OPENCLAW_SINGLE_CLIENT_MODE || '').trim().toLowerCase()
+);
+
 let middlewareProtocol = 'ws:';
 try {
   middlewareProtocol = new URL(MIDDLEWARE_WS_URL).protocol;
@@ -43,7 +47,7 @@ try {
   logger.error('invalid_middleware_ws_url', { err: err.message, url: MIDDLEWARE_WS_URL });
   process.exit(1);
 }
-if (REQUIRE_MIDDLEWARE_TLS && middlewareProtocol !== 'wss:') {
+if (!SINGLE_CLIENT_MODE && REQUIRE_MIDDLEWARE_TLS && middlewareProtocol !== 'wss:') {
   logger.error('middleware_tls_required', { url: MIDDLEWARE_WS_URL });
   process.exit(1);
 }
@@ -51,6 +55,7 @@ if (REQUIRE_MIDDLEWARE_TLS && middlewareProtocol !== 'wss:') {
 const keyPair = generateKeyPairFromSeed(SEED);
 logger.info('ombot_startup', { serverPublicKeyPrefix: keyPair.publicKeyHex.slice(0, 16) });
 logger.info('security_posture', {
+  singleClientMode: SINGLE_CLIENT_MODE,
   middlewareTlsRequired: REQUIRE_MIDDLEWARE_TLS,
   middlewareProtocol,
   signatureRequired: REQUIRE_CLIENT_SIGNATURE,
@@ -70,7 +75,10 @@ const sessionConfig = {
   ALLOW_LEGACY_PROTOCOL,
   REQUIRED_CAPABILITIES,
   middlewareHttpsAgent,
+  SINGLE_CLIENT_MODE,
 };
+
+const WS_LISTEN_HOST = (process.env.OPENCLAW_WS_LISTEN_HOST || '0.0.0.0').trim();
 
 let acceptingNewConnections = true;
 const rateWindow = new Map();
@@ -100,10 +108,10 @@ healthServer.listen(HEALTH_PORT, '0.0.0.0', () => {
   logger.info('health_server_listening', { healthPort: HEALTH_PORT });
 });
 
-const wss = new WebSocketServer({ host: '0.0.0.0', port: PORT, path: '/ws' });
+const wss = new WebSocketServer({ host: WS_LISTEN_HOST, port: PORT, path: '/ws' });
 
 wss.on('listening', () => {
-  logger.info('ws_server_listening', { port: PORT, path: '/ws' });
+  logger.info('ws_server_listening', { host: WS_LISTEN_HOST, port: PORT, path: '/ws' });
 });
 
 if (shouldStartGatewayBridge()) {
@@ -174,6 +182,14 @@ wss.on('connection', (clientWs, req) => {
         return;
       }
       session.completeRegisterAndConnectMiddleware(json);
+      return;
+    }
+
+    if (SINGLE_CLIENT_MODE && json.type === 'encrypted') {
+      const dec = session.tryDecryptClientBox(raw, json);
+      if (dec && dec.json.type === 'req') {
+        session.relaySignedReqToMiddleware(dec.raw, dec.json);
+      }
       return;
     }
 

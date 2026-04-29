@@ -4,6 +4,7 @@ import { writeAuditEvent } from './auditLog.js';
 import { loadChatroomKeysSync, saveChatroomKeysSync } from './chatroomStorage.js';
 import { hexToBytes } from './ed25519.js';
 import { logger } from './logger.js';
+import { GatewayAgentClient } from './gatewayAgentClient.js';
 import {
   capabilityRejectTotal,
   encryptedMessagesTotal,
@@ -15,6 +16,25 @@ import {
 } from './metrics.js';
 import { computeSessionKey, middlewareWsUrlForSession } from './sessionKey.js';
 import { validateReqSignature } from './securityGuards.js';
+
+function assistantTextToPhoneRes(text) {
+  return JSON.stringify({
+    type: 'res',
+    payload: { text },
+  });
+}
+
+function phonePayloadToUserTextFromReq(j) {
+  if (!j || typeof j !== 'object') return null;
+  if (j.type !== 'req') return null;
+  const method = (process.env.OPENCLAW_BRIDGE_PHONE_METHOD || 'agent').trim();
+  if (String(j.method) !== method) return null;
+  const p = j.params;
+  if (!p || typeof p !== 'object') return null;
+  if (p.message != null) return String(p.message);
+  if (p.text != null) return String(p.text);
+  return null;
+}
 
 /**
  * One Machine-side relay: optional local ClawChat client WebSocket + outbound middleware + NaCl box to Phone.
@@ -54,10 +74,18 @@ export class MachineRelaySession {
     this.seenNonces = new Map();
     this._reconnectTimer = null;
     this._destroyed = false;
+    /** @type {GatewayAgentClient | null} */
+    this._gatewayClient = null;
+    /** @type {string | null} */
+    this.singleClientAgentId = null;
   }
 
   destroy() {
     this._destroyed = true;
+    if (this._gatewayClient) {
+      this._gatewayClient.destroy();
+      this._gatewayClient = null;
+    }
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
@@ -138,7 +166,88 @@ export class MachineRelaySession {
       participantId: this.participantId,
       hasRoom,
     });
+    if (this.config.SINGLE_CLIENT_MODE) {
+      this.completeSingleClientRegister(json);
+      return;
+    }
     this.connectToMiddleware();
+  }
+
+  /**
+   * Single-client mode: no Ombers; same WebSocket completes box handshake and receives encrypted traffic.
+   * @param {object} json register_public_key body
+   */
+  completeSingleClientRegister(json) {
+    const boxB64 = json.boxPublicKey || json.publicKey;
+    if (!boxB64 || String(boxB64).trim() === '') {
+      this.notifyClientJson({
+        type: 'error',
+        message: 'box_public_key_required',
+        traceId: this.traceId,
+      });
+      return;
+    }
+    const aid = json.agentId || json.appId || 'default';
+    const roomId = String(json.conversationId || json.chatroomId || 'default').trim();
+    const pid =
+      (json.participantId == null ? '' : String(json.participantId).trim()) || 'default';
+    this.singleClientAgentId = String(aid).trim() || 'default';
+    this.chatroomBoxKeys = this.getOrCreateChatroomKeys(aid, roomId, pid);
+    try {
+      this.chatroomBoxKeys.peerPublicKey = base64ToPublicKey(boxB64);
+    } catch {
+      this.notifyClientJson({
+        type: 'error',
+        message: 'invalid_box_public_key',
+        traceId: this.traceId,
+      });
+      return;
+    }
+    saveChatroomKeysSync(
+      aid,
+      roomId,
+      publicKeyToBase64(this.chatroomBoxKeys.publicKey),
+      Buffer.from(this.chatroomBoxKeys.secretKey).toString('base64'),
+      String(boxB64).trim(),
+      pid,
+      this.chatroomBoxKeys.peerPublicKeys || {}
+    );
+    writeAuditEvent('single_client_peer_ready', {
+      agentId: aid,
+      roomId,
+      traceId: this.traceId,
+      participantId: pid,
+    });
+    logger.info('single_client_peer_ready', {
+      clientId: this.clientId,
+      traceId: this.traceId,
+      participantId: pid,
+    });
+    this.notifyClientJson({
+      type: 'peer_public_key',
+      publicKey: publicKeyToBase64(this.chatroomBoxKeys.publicKey),
+    });
+  }
+
+  /**
+   * Decrypt outer box frame from client (ClawChat after peer_public_key).
+   * @returns {{ raw: string, json: object } | null}
+   */
+  tryDecryptClientBox(_rawOuter, json) {
+    if (!this.chatroomBoxKeys?.peerPublicKey || !this.chatroomBoxKeys?.secretKey) return null;
+    if (json.type !== 'encrypted' || !json.nonce || !json.payload) return null;
+    const plain = decrypt(
+      json.nonce,
+      json.payload,
+      this.chatroomBoxKeys.peerPublicKey,
+      this.chatroomBoxKeys.secretKey
+    );
+    if (!plain) return null;
+    try {
+      return { raw: plain, json: JSON.parse(plain) };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -190,8 +299,13 @@ export class MachineRelaySession {
    * Encrypt signed client req and send to middleware (local ClawChat client path).
    */
   relaySignedReqToMiddleware(raw, json) {
+    if (json.type !== 'req') return false;
+
+    if (this.config.SINGLE_CLIENT_MODE) {
+      return this.relaySignedReqSingleClient(raw, json);
+    }
+
     if (
-      json.type !== 'req' ||
       !this.middlewareWs ||
       this.middlewareWs.readyState !== 1 ||
       !this.chatroomBoxKeys?.peerPublicKey
@@ -229,9 +343,103 @@ export class MachineRelaySession {
   }
 
   /**
+   * @param {string} raw
+   * @param {object} json
+   * @returns {boolean} true if handled (including errors to client)
+   */
+  relaySignedReqSingleClient(raw, json) {
+    if (!this.chatroomBoxKeys?.peerPublicKey) {
+      return false;
+    }
+    const guardResult = validateReqSignature({
+      reqJson: json,
+      verifyPublicKey: this.clientVerifyPublicKey,
+      nonceMap: this.seenNonces,
+      requireSignature: this.config.REQUIRE_CLIENT_SIGNATURE,
+      signatureMaxAgeMs: this.config.SIGNATURE_MAX_AGE_MS,
+      nonceTtlMs: this.config.NONCE_TTL_MS,
+    });
+    if (!guardResult.ok) {
+      relayErrorsTotal.inc();
+      if (guardResult.reason === 'replay') replayRejectTotal.inc();
+      else signatureVerifyFailTotal.inc();
+      writeAuditEvent('req_rejected', {
+        clientId: this.clientId,
+        reason: guardResult.reason,
+        traceId: this.traceId,
+      });
+      this.notifyClientJson({ type: 'error', message: guardResult.reason, traceId: this.traceId });
+      return true;
+    }
+    const userText = phonePayloadToUserTextFromReq(json);
+    if (userText == null) {
+      this.notifyClientJson({
+        type: 'error',
+        message: 'unsupported_req_method',
+        traceId: this.traceId,
+      });
+      return true;
+    }
+    this.ensureSingleClientGateway();
+    if (!this._gatewayClient) {
+      this.notifyClientJson({
+        type: 'error',
+        message: 'gateway_unavailable',
+        traceId: this.traceId,
+      });
+      return true;
+    }
+    this._gatewayClient.ensureConnected();
+    const agentId =
+      json.params && typeof json.params === 'object' && json.params.agentId != null
+        ? String(json.params.agentId).trim()
+        : this.singleClientAgentId || 'default';
+    this._gatewayClient.enqueueAgentTurn(userText, agentId || 'default');
+    return true;
+  }
+
+  ensureSingleClientGateway() {
+    if (!this.config.SINGLE_CLIENT_MODE || this._gatewayClient) return;
+    const gatewayUrl = (process.env.OPENCLAW_GATEWAY_URL || 'ws://127.0.0.1:18789').trim();
+    const gatewayToken = (process.env.OPENCLAW_GATEWAY_TOKEN || '').trim();
+    this._gatewayClient = new GatewayAgentClient({
+      gatewayUrl,
+      gatewayToken,
+      agentMethod: (process.env.OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD || 'agent').trim(),
+      onAssistantText: (text) => {
+        const frame = assistantTextToPhoneRes(text);
+        this.sendEncryptedToClientWs(frame);
+      },
+      onError: () => {},
+    });
+    this._gatewayClient.ensureConnected();
+  }
+
+  sendEncryptedToClientWs(plainUtf8) {
+    if (
+      !this.clientWs ||
+      this.clientWs.readyState !== 1 ||
+      !this.chatroomBoxKeys?.peerPublicKey
+    ) {
+      return false;
+    }
+    const { nonce, payload } = encrypt(
+      plainUtf8,
+      this.chatroomBoxKeys.peerPublicKey,
+      this.chatroomBoxKeys.secretKey
+    );
+    this.clientWs.send(JSON.stringify({ type: 'encrypted', nonce, payload }));
+    encryptedMessagesTotal.inc();
+    return true;
+  }
+
+  /**
    * Send plaintext JSON string to Phone (box encrypt). Used by OpenClaw bridge for assistant replies.
    */
   sendPlaintextToPhone(plainUtf8) {
+    if (this.config.SINGLE_CLIENT_MODE) {
+      return this.sendEncryptedToClientWs(plainUtf8);
+    }
     if (
       !this.middlewareWs ||
       this.middlewareWs.readyState !== 1 ||
