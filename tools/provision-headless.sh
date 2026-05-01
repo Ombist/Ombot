@@ -82,6 +82,16 @@ run_as_ombot() {
   fi
 }
 
+require_active_service() {
+  local svc="$1"
+  local state
+  state="$(as_root systemctl is-active "${svc}" 2>/dev/null || true)"
+  if [[ "${state}" != "active" ]]; then
+    echo "ombist-provision: ${svc} not active (state=${state:-unknown})" >&2
+    exit 20
+  fi
+}
+
 echo "ombist-provision: preparing service account and directories..."
 if ! getent group "${OMBOT_GROUP}" >/dev/null 2>&1; then
   as_root groupadd --system "${OMBOT_GROUP}"
@@ -107,7 +117,7 @@ npm install -g openclaw@latest"
 
 echo "ombist-provision: cloning/updating Ombot..."
 if as_root test -d "${OMBOT_REPO_DIR}/.git"; then
-  run_as_ombot "git -C '${OMBOT_REPO_DIR}' pull --ff-only || true"
+  run_as_ombot "git -C '${OMBOT_REPO_DIR}' pull --ff-only"
 else
   as_root rm -rf "${OMBOT_REPO_DIR}"
   run_as_ombot "git clone --depth 1 '${OMBOT_GIT_URL}' '${OMBOT_REPO_DIR}'"
@@ -116,7 +126,7 @@ run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"
 
 echo "ombist-provision: cloning/building OmbRouter and registering OpenClaw plugin..."
 if as_root test -d "${OMBROUTER_REPO_DIR}/.git"; then
-  run_as_ombot "git -C '${OMBROUTER_REPO_DIR}' pull --ff-only || true"
+  run_as_ombot "git -C '${OMBROUTER_REPO_DIR}' pull --ff-only"
 else
   as_root rm -rf "${OMBROUTER_REPO_DIR}"
   run_as_ombot "git clone --depth 1 '${OMBROUTER_GIT_URL}' '${OMBROUTER_REPO_DIR}'"
@@ -340,15 +350,23 @@ echo "ombist-provision: enabling services (start: OpenClaw gateway → Ombot; Om
 as_root systemctl daemon-reload
 as_root systemctl enable ombist-openclaw-gateway.service ombist-ombot.service
 as_root systemctl start ombist-openclaw-gateway.service
+GW_BOUND="false"
 for _i in {1..45}; do
   if as_root systemctl is-active --quiet ombist-openclaw-gateway.service 2>/dev/null; then
     if as_root ss -ltn 2>/dev/null | grep -q "127.0.0.1:${OPENCLAW_GATEWAY_PORT}"; then
+      GW_BOUND="true"
       break
     fi
   fi
   sleep 1
 done
+if [[ "${GW_BOUND}" != "true" ]]; then
+  echo "ombist-provision: gateway did not bind to 127.0.0.1:${OPENCLAW_GATEWAY_PORT}" >&2
+  exit 21
+fi
 as_root systemctl start ombist-ombot.service
+require_active_service "ombist-openclaw-gateway.service"
+require_active_service "ombist-ombot.service"
 
 echo "ombist-provision: applying firewall guard for tcp/${OPENCLAW_GATEWAY_PORT}..."
 if command -v ufw >/dev/null 2>&1; then

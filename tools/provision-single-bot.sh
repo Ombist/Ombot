@@ -66,6 +66,16 @@ run_as_ombot() {
   fi
 }
 
+require_active_service() {
+  local svc="$1"
+  local state
+  state="$(as_root systemctl is-active "${svc}" 2>/dev/null || true)"
+  if [[ "${state}" != "active" ]]; then
+    echo "ombist-provision-single-bot: ${svc} not active (state=${state:-unknown})" >&2
+    exit 20
+  fi
+}
+
 echo "ombist-provision-single-bot: service account and dirs..."
 if ! getent group "${OMBOT_GROUP}" >/dev/null 2>&1; then
   as_root groupadd --system "${OMBOT_GROUP}"
@@ -140,7 +150,7 @@ npm install -g openclaw@latest"
 
 echo "ombist-provision-single-bot: cloning Ombot..."
 if as_root test -d "${OMBOT_REPO_DIR}/.git"; then
-  run_as_ombot "git -C '${OMBOT_REPO_DIR}' pull --ff-only || true"
+  run_as_ombot "git -C '${OMBOT_REPO_DIR}' pull --ff-only"
 else
   as_root rm -rf "${OMBOT_REPO_DIR}"
   run_as_ombot "git clone --depth 1 '${OMBOT_GIT_URL}' '${OMBOT_REPO_DIR}'"
@@ -149,7 +159,7 @@ run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"
 
 echo "ombist-provision-single-bot: OmbRouter + plugin..."
 if as_root test -d "${OMBROUTER_REPO_DIR}/.git"; then
-  run_as_ombot "git -C '${OMBROUTER_REPO_DIR}' pull --ff-only || true"
+  run_as_ombot "git -C '${OMBROUTER_REPO_DIR}' pull --ff-only"
 else
   as_root rm -rf "${OMBROUTER_REPO_DIR}"
   run_as_ombot "git clone --depth 1 '${OMBROUTER_GIT_URL}' '${OMBROUTER_REPO_DIR}'"
@@ -281,13 +291,17 @@ if ! command -v nginx >/dev/null 2>&1; then
   elif command -v yum >/dev/null 2>&1; then
     as_root yum install -y nginx
   else
-    echo "ombist-provision-single-bot: nginx not found; install nginx manually and add WSS site." >&2
-    FW_WARNING="nginx_missing"
+    echo "ombist-provision-single-bot: nginx not found and no supported package manager to install it" >&2
+    exit 21
   fi
 fi
 
-if command -v nginx >/dev/null 2>&1; then
-  as_root tee "${NGINX_SITE}" >/dev/null <<EOF
+if ! command -v nginx >/dev/null 2>&1; then
+  echo "ombist-provision-single-bot: nginx install step finished but nginx still unavailable" >&2
+  exit 22
+fi
+
+as_root tee "${NGINX_SITE}" >/dev/null <<EOF
 server {
     listen ${OMBIST_WSS_PORT} ssl;
     listen [::]:${OMBIST_WSS_PORT} ssl;
@@ -308,14 +322,13 @@ server {
     }
 }
 EOF
-  as_root ln -sf "${NGINX_SITE}" /etc/nginx/sites-enabled/ombist-single-bot.conf 2>/dev/null || true
-  if as_root nginx -t 2>/dev/null; then
-    as_root systemctl enable nginx.service 2>/dev/null || true
-    as_root systemctl reload nginx.service 2>/dev/null || as_root systemctl restart nginx.service 2>/dev/null || true
-  else
-    FW_WARNING="nginx_config_invalid"
-  fi
+as_root ln -sf "${NGINX_SITE}" /etc/nginx/sites-enabled/ombist-single-bot.conf
+if ! as_root nginx -t; then
+  echo "ombist-provision-single-bot: nginx configuration test failed" >&2
+  exit 23
 fi
+as_root systemctl enable nginx.service
+as_root systemctl restart nginx.service
 
 echo "ombist-provision-single-bot: systemd start..."
 as_root systemctl daemon-reload
@@ -323,6 +336,9 @@ as_root systemctl enable ombist-openclaw-gateway.service ombist-ombot.service
 as_root systemctl start ombist-openclaw-gateway.service
 sleep 2
 as_root systemctl start ombist-ombot.service
+require_active_service "ombist-openclaw-gateway.service"
+require_active_service "ombist-ombot.service"
+require_active_service "nginx.service"
 
 echo "ombist-provision-single-bot: firewall for gateway port..."
 if command -v ufw >/dev/null 2>&1; then
