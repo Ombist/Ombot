@@ -34,7 +34,7 @@ usage() {
 Usage:
   ombot-admin --version [--json]
   ombot-admin preflight [--json]
-  ombot-admin tls rotate --pub-host <host> [--json]
+  ombot-admin tls rotate --pub-host <host> [--client-root-ca-sha256 <hex>] [--json]
   ombot-admin tls show [--json]
   ombot-admin systemctl monitor [--json]
   ombot-admin ombrouter install [--pinned-ref <sha>] [--json]
@@ -51,10 +51,15 @@ cmd_version() {
 
 cmd_tls_rotate() {
   local pubhost=""
+  local client_sha_raw=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --pub-host)
         pubhost="${2:-}"
+        shift 2
+        ;;
+      --client-root-ca-sha256)
+        client_sha_raw="${2:-}"
         shift 2
         ;;
       *) shift ;;
@@ -65,6 +70,20 @@ cmd_tls_rotate() {
   if ! command -v openssl >/dev/null 2>&1; then
     ombist_emit_envelope false "single_bot_tls_rotate" "openssl not installed." '{}' "[]" '[{"code":"NO_OPENSSL","message":"openssl not found"}]'
     return 0
+  fi
+
+  local warnings_json="[]"
+  local norm_client=""
+  norm_client="$(printf '%s' "${client_sha_raw}" | tr '[:upper:]' '[:lower:]' | tr -cd '0-9a-f')"
+  if [[ -n "${norm_client}" ]] && [[ ${#norm_client} -ne 64 ]]; then
+    norm_client=""
+  fi
+  if [[ -n "${norm_client}" ]] && ombist_as_root test -r "${TLS_DIR}/RootCA.crt" 2>/dev/null; then
+    local disk_hex=""
+    disk_hex="$(ombist_tls_pem_file_sha256_hex "${TLS_DIR}/RootCA.crt")" || disk_hex=""
+    if [[ -n "${disk_hex}" ]] && [[ "${norm_client}" != "${disk_hex}" ]]; then
+      warnings_json="$(printf '[{"code":"%s","message":%s}]' "CLIENT_ROOT_CA_MISMATCH" "$(ombist_json_escape_string "client root CA fingerprint does not match disk before rotate")")"
+    fi
   fi
 
   TLS_NGINX_STATE=""
@@ -82,22 +101,26 @@ cmd_tls_rotate() {
     esac
     local errs
     errs="$(printf '[{"code":"%s","message":%s}]' "${code}" "$(ombist_json_escape_string "${msg}")")"
-    ombist_emit_envelope false "single_bot_tls_rotate" "${msg}" '{}' "[]" "${errs}"
+    ombist_emit_envelope false "single_bot_tls_rotate" "${msg}" '{}' "${warnings_json}" "${errs}"
     return 0
   fi
+
+  local new_hex=""
+  new_hex="$(ombist_tls_pem_file_sha256_hex "${TLS_DIR}/RootCA.crt")" || new_hex=""
 
   local san_line san_json not_after
   san_line="$(ombist_tls_san_line "${pubhost}")"
   san_json="[$(ombist_json_escape_string "${san_line}")]"
   not_after="$(ombist_tls_server_not_after)"
   local data
-  data="$(printf '{"tls":{"publicHost":%s,"san":%s,"rootCaPemBase64":%s,"serverNotAfter":%s},"nginx":{"state":%s}}' \
+  data="$(printf '{"tls":{"publicHost":%s,"san":%s,"rootCaPemBase64":%s,"serverNotAfter":%s,"rootCaSha256Hex":%s},"nginx":{"state":%s}}' \
     "$(ombist_json_escape_string "${pubhost}")" \
     "${san_json}" \
     "$(ombist_json_escape_string "${TLS_ROOTCA_B64}")" \
     "$(ombist_json_escape_string "${not_after}")" \
+    "$(ombist_json_escape_string "${new_hex}")" \
     "$(ombist_json_escape_string "${TLS_NGINX_STATE}")")"
-  ombist_emit_envelope true "single_bot_tls_rotate" "TLS rotated; nginx=${TLS_NGINX_STATE}." "${data}" "[]" "[]"
+  ombist_emit_envelope true "single_bot_tls_rotate" "TLS rotated; nginx=${TLS_NGINX_STATE}." "${data}" "${warnings_json}" "[]"
 }
 
 cmd_tls_show() {
@@ -105,16 +128,20 @@ cmd_tls_show() {
   if [[ -r "${TLS_DIR}/server.crt" ]]; then
     pubhost="$(ombist_as_root openssl x509 -in "${TLS_DIR}/server.crt" -noout -subject 2>/dev/null | sed 's/^subject=.*CN *= *//;s/^subject= *CN=//')" || true
   fi
-  local san not_after b64
+  local san not_after b64 root_hex=""
   san="$(ombist_as_root openssl x509 -in "${TLS_DIR}/server.crt" -noout -ext subjectAltName 2>/dev/null | tr '\n' ' ' || true)"
   not_after="$(ombist_tls_server_not_after)"
   b64="$(ombist_tls_rootca_pem_base64 2>/dev/null || true)"
+  if ombist_as_root test -r "${TLS_DIR}/RootCA.crt" 2>/dev/null; then
+    root_hex="$(ombist_tls_pem_file_sha256_hex "${TLS_DIR}/RootCA.crt")" || root_hex=""
+  fi
   local data
-  data="$(printf '{"tls":{"subjectCn":%s,"sanText":%s,"serverNotAfter":%s,"rootCaPemBase64":%s}}' \
+  data="$(printf '{"tls":{"subjectCn":%s,"sanText":%s,"serverNotAfter":%s,"rootCaPemBase64":%s,"rootCaSha256Hex":%s}}' \
     "$(ombist_json_escape_string "${pubhost}")" \
     "$(ombist_json_escape_string "${san}")" \
     "$(ombist_json_escape_string "${not_after}")" \
-    "$(ombist_json_escape_string "${b64}")")"
+    "$(ombist_json_escape_string "${b64}")" \
+    "$(ombist_json_escape_string "${root_hex}")")"
   ombist_emit_envelope true "tls_show" "TLS material on disk." "${data}" "[]" "[]"
 }
 

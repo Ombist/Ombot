@@ -16,11 +16,21 @@ ombist_tls_san_line() {
   printf '%s' "${san_line}"
 }
 
+# OpenSSL 3 x509 -extfile expects [alt_names] entries as DNS.n / IP.n (not "DNS:host" lines).
+ombist_tls_alt_names_ini_lines() {
+  local pubhost="$1"
+  if [[ "${pubhost}" =~ ^[0-9.]+$ ]]; then
+    printf 'IP.1 = %s\n' "${pubhost}"
+  elif [[ "${pubhost}" == *:* ]]; then
+    printf 'IP.1 = %s\n' "${pubhost}"
+  else
+    printf 'DNS.1 = %s\n' "${pubhost}"
+  fi
+}
+
 # Generate Root CA + server cert (no delete). Used by first-time provision.
 ombist_tls_provision_initial() {
   local pubhost="$1"
-  local san_line
-  san_line="$(ombist_tls_san_line "${pubhost}")"
 
   ombist_as_root openssl genrsa -out "${TLS_DIR}/RootCA.key" 4096
   ombist_as_root openssl req -x509 -new -nodes -key "${TLS_DIR}/RootCA.key" -sha256 -days 3650 \
@@ -34,7 +44,7 @@ basicConstraints=CA:FALSE
 keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
 subjectAltName = @alt_names
 [alt_names]
-${san_line}
+$(ombist_tls_alt_names_ini_lines "${pubhost}")
 EOF
 
   if ! ombist_as_root openssl x509 -req -in "${TLS_DIR}/server.csr" \
@@ -63,8 +73,6 @@ EOF
 # Remove existing material and re-issue (TLS rotate).
 ombist_tls_rotate() {
   local pubhost="$1"
-  local san_line
-  san_line="$(ombist_tls_san_line "${pubhost}")"
 
   if ! command -v openssl >/dev/null 2>&1; then
     return 8
@@ -99,6 +107,22 @@ ombist_tls_rotate() {
 
 ombist_tls_rootca_pem_base64() {
   ombist_as_root base64 -w0 "${TLS_DIR}/RootCA.crt" 2>/dev/null || ombist_as_root base64 "${TLS_DIR}/RootCA.crt" | tr -d '\n'
+}
+
+# Lowercase hex SHA256 of exact Root CA PEM file bytes (matches client hash of rootCaPemBase64 decode).
+ombist_tls_pem_file_sha256_hex() {
+  local path="$1"
+  [[ -n "$path" ]] || return 1
+  local out=""
+  if command -v sha256sum >/dev/null 2>&1; then
+    out="$(ombist_as_root sha256sum "$path" 2>/dev/null | awk '{print tolower($1)}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    out="$(ombist_as_root shasum -a 256 "$path" 2>/dev/null | awk '{print tolower($1)}')"
+  else
+    out="$(ombist_as_root openssl dgst -sha256 "$path" 2>/dev/null | awk '{print tolower($NF)}')"
+  fi
+  [[ ${#out} -eq 64 ]] || return 1
+  printf '%s' "$out"
 }
 
 # Optional: notAfter from server cert (ISO-ish); empty if missing.

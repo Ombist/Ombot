@@ -171,8 +171,19 @@ ombist_as_root() {
   as_root "$@"
 }
 
+# Bracket unbracketed IPv6 for nginx server_name (RFC 3986). PUBHOST stays unbracketed for tls.sh SAN.
+ombist_tls_pubhost_url_authority() {
+  local raw="$1"
+  if [[ "${raw}" == *:* ]] && [[ ! "${raw}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "${raw}" != \[*\] ]]; then
+    printf '[%s]' "${raw}"
+  else
+    printf '%s' "${raw}"
+  fi
+}
+
 echo "ombist-provision-single-bot: TLS (Root CA + server cert)..."
 PUBHOST="${OMBIST_TLS_PUBLIC_HOST}"
+PUBHOST_TLS_AUTHORITY="$(ombist_tls_pubhost_url_authority "${PUBHOST}")"
 # shellcheck source=/dev/null
 source "${OMBOT_BIN_DIR}/ombot-admin-lib/tls.sh"
 if ! ombist_tls_provision_initial "${PUBHOST}"; then
@@ -343,7 +354,7 @@ as_root tee "${NGINX_SITE}" >/dev/null <<EOF
 server {
     listen ${OMBIST_WSS_PORT} ssl;
     listen [::]:${OMBIST_WSS_PORT} ssl;
-    server_name ${PUBHOST};
+    server_name ${PUBHOST_TLS_AUTHORITY};
     ssl_certificate ${TLS_DIR}/server.crt;
     ssl_certificate_key ${TLS_DIR}/server.key;
     location = /health {
