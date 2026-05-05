@@ -17,7 +17,8 @@ import {
 } from './openclawGatewayBridge.js';
 
 const PORT = Number(process.env.PORT) || 8080;
-const HEALTH_PORT = Number(process.env.HEALTH_PORT || process.env.PORT || 8080) + 1;
+// Default 8082 so we do not collide with Ombers MACHINE_PORT (8081) when PORT=8080.
+const HEALTH_PORT = Number(process.env.HEALTH_PORT) || 8082;
 const MIDDLEWARE_WS_URL = process.env.MIDDLEWARE_WS_URL || 'wss://127.0.0.1:8081/ws';
 const MIDDLEWARE_AUTH_TOKEN = (process.env.MIDDLEWARE_AUTH_TOKEN || process.env.OMBERS_AUTH_TOKEN || '').trim();
 const SEED = process.env.OPENCLAW_MACHINE_SEED || 'ombot-seed';

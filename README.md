@@ -180,7 +180,7 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | Env | Default | Description |
 |-----|---------|-------------|
 | `PORT` | 8080 | WS server listen port |
-| `HEALTH_PORT` | `PORT+1` | HTTP health/metrics port |
+| `HEALTH_PORT` | `8082` | HTTP health/metrics port（預設刻意避開 Ombers `MACHINE_PORT` 8081） |
 | `MIDDLEWARE_WS_URL` | wss://127.0.0.1:8081/ws | Middleware **基底**（須以 `/ws` 結尾）；多路時會再連線至 `…/ws/<sessionKey>` |
 | `MIDDLEWARE_AUTH_TOKEN` | (empty) | 連到 Middleware 時的 Bearer token（優先走 `Authorization` header；失敗時可退回 query token） |
 | `MIDDLEWARE_TLS_CLIENT_CERT_PATH` | (empty) | 若 ingress 要求 **mTLS**：指向 **client** 憑證 PEM（與 key 成對設定；見 monorepo `Ombers_Communicator/docs/nginx-mtls-ingress.md`） |

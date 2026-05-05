@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Ombist single-bot maintenance CLI. Emits one JSON object per invocation (stdout).
+# Install: /opt/ombot/bin/ombot-admin + /opt/ombot/bin/ombot-admin-lib/
+set -uo pipefail
+
+OMBOT_ADMIN_VERSION="1.0.0"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB="${ROOT}/ombot-admin-lib"
+
+die() {
+  echo "ombot-admin: $*" >&2
+  exit 2
+}
+
+[[ -d "${LIB}" ]] || die "missing lib dir ${LIB}"
+
+# shellcheck source=/dev/null
+. "${LIB}/json.sh"
+# shellcheck source=/dev/null
+. "${LIB}/as_root.sh"
+# shellcheck source=/dev/null
+. "${LIB}/tls.sh"
+# shellcheck source=/dev/null
+. "${LIB}/preflight.sh"
+# shellcheck source=/dev/null
+. "${LIB}/systemctl.sh"
+# shellcheck source=/dev/null
+. "${LIB}/ombrouter.sh"
+# shellcheck source=/dev/null
+. "${LIB}/health-port.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ombot-admin --version [--json]
+  ombot-admin preflight [--json]
+  ombot-admin tls rotate --pub-host <host> [--json]
+  ombot-admin tls show [--json]
+  ombot-admin systemctl monitor [--json]
+  ombot-admin ombrouter install [--pinned-ref <sha>] [--json]
+  ombot-admin ombot health-port ensure-internal [--json]
+EOF
+}
+
+cmd_version() {
+  local caps='["tls","preflight","systemctl","ombrouter","health_port"]'
+  local data
+  data="$(printf '{"version":%s,"capabilities":%s}' "$(ombist_json_escape_string "${OMBOT_ADMIN_VERSION}")" "${caps}")"
+  ombist_emit_envelope true "version" "ombot-admin ${OMBOT_ADMIN_VERSION}" "${data}" "[]" "[]"
+}
+
+cmd_tls_rotate() {
+  local pubhost=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pub-host)
+        pubhost="${2:-}"
+        shift 2
+        ;;
+      *) shift ;;
+    esac
+  done
+  [[ -n "${pubhost}" ]] || die "tls rotate requires --pub-host"
+
+  if ! command -v openssl >/dev/null 2>&1; then
+    ombist_emit_envelope false "single_bot_tls_rotate" "openssl not installed." '{}' "[]" '[{"code":"NO_OPENSSL","message":"openssl not found"}]'
+    return 0
+  fi
+
+  TLS_NGINX_STATE=""
+  TLS_ROOTCA_B64=""
+  set +e
+  ombist_tls_rotate "${pubhost}"
+  local rc=$?
+  set -e
+  if [[ "$rc" -ne 0 ]]; then
+    local code msg
+    case "$rc" in
+      7) code="NO_SUDO"; msg="passwordless sudo or root required" ;;
+      8) code="NO_OPENSSL"; msg="openssl not found" ;;
+      *) code="TLS_FAILED"; msg="tls rotate failed (exit ${rc})" ;;
+    esac
+    local errs
+    errs="$(printf '[{"code":"%s","message":%s}]' "${code}" "$(ombist_json_escape_string "${msg}")")"
+    ombist_emit_envelope false "single_bot_tls_rotate" "${msg}" '{}' "[]" "${errs}"
+    return 0
+  fi
+
+  local san_line san_json not_after
+  san_line="$(ombist_tls_san_line "${pubhost}")"
+  san_json="[$(ombist_json_escape_string "${san_line}")]"
+  not_after="$(ombist_tls_server_not_after)"
+  local data
+  data="$(printf '{"tls":{"publicHost":%s,"san":%s,"rootCaPemBase64":%s,"serverNotAfter":%s},"nginx":{"state":%s}}' \
+    "$(ombist_json_escape_string "${pubhost}")" \
+    "${san_json}" \
+    "$(ombist_json_escape_string "${TLS_ROOTCA_B64}")" \
+    "$(ombist_json_escape_string "${not_after}")" \
+    "$(ombist_json_escape_string "${TLS_NGINX_STATE}")")"
+  ombist_emit_envelope true "single_bot_tls_rotate" "TLS rotated; nginx=${TLS_NGINX_STATE}." "${data}" "[]" "[]"
+}
+
+cmd_tls_show() {
+  local pubhost=""
+  if [[ -r "${TLS_DIR}/server.crt" ]]; then
+    pubhost="$(ombist_as_root openssl x509 -in "${TLS_DIR}/server.crt" -noout -subject 2>/dev/null | sed 's/^subject=.*CN *= *//;s/^subject= *CN=//')" || true
+  fi
+  local san not_after b64
+  san="$(ombist_as_root openssl x509 -in "${TLS_DIR}/server.crt" -noout -ext subjectAltName 2>/dev/null | tr '\n' ' ' || true)"
+  not_after="$(ombist_tls_server_not_after)"
+  b64="$(ombist_tls_rootca_pem_base64 2>/dev/null || true)"
+  local data
+  data="$(printf '{"tls":{"subjectCn":%s,"sanText":%s,"serverNotAfter":%s,"rootCaPemBase64":%s}}' \
+    "$(ombist_json_escape_string "${pubhost}")" \
+    "$(ombist_json_escape_string "${san}")" \
+    "$(ombist_json_escape_string "${not_after}")" \
+    "$(ombist_json_escape_string "${b64}")")"
+  ombist_emit_envelope true "tls_show" "TLS material on disk." "${data}" "[]" "[]"
+}
+
+main() {
+  local -a args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) shift ;;
+      --help | -h) usage; exit 0 ;;
+      *) args+=("$1"); shift ;;
+    esac
+  done
+  local -a filtered=()
+  local a
+  for a in "${args[@]}"; do
+    [[ "$a" == "--json" ]] && continue
+    filtered+=("$a")
+  done
+  args=("${filtered[@]}")
+  [[ ${#args[@]} -gt 0 ]] || {
+    usage
+    exit 2
+  }
+
+  case "${args[0]}" in
+    --version)
+      cmd_version
+      ;;
+    preflight)
+      ombist_cmd_preflight_main
+      ;;
+    tls)
+      [[ ${#args[@]} -ge 2 ]] || die "tls needs subcommand"
+      case "${args[1]}" in
+        rotate) cmd_tls_rotate "${args[@]:2}" ;;
+        show) cmd_tls_show ;;
+        *) die "unknown tls subcommand" ;;
+      esac
+      ;;
+    systemctl)
+      [[ "${args[1]:-}" == "monitor" ]] || die "systemctl only supports monitor"
+      ombist_cmd_systemctl_monitor_main
+      ;;
+    ombrouter)
+      [[ "${args[1]:-}" == "install" ]] || die "ombrouter only supports install"
+      local pin=""
+      local i=2
+      while [[ $i -lt ${#args[@]} ]]; do
+        if [[ "${args[$i]}" == "--pinned-ref" ]]; then
+          pin="${args[$((i + 1))]:-}"
+          i=$((i + 2))
+        else
+          i=$((i + 1))
+        fi
+      done
+      ombist_cmd_ombrouter_install_main "${pin}"
+      ;;
+    ombot)
+      [[ "${args[1]:-}" == "health-port" && "${args[2]:-}" == "ensure-internal" ]] || die "ombot only supports health-port ensure-internal"
+      ombist_cmd_health_port_ensure_main
+      ;;
+    *)
+      die "unknown command: ${args[0]}"
+      ;;
+  esac
+}
+
+main "$@"

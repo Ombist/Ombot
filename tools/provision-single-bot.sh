@@ -9,6 +9,15 @@
 
 set -euo pipefail
 
+_OMBIST_PROVISION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${OMBIST_PROVISION_LIB_PATH:-}" ]] && [[ -s "${OMBIST_PROVISION_LIB_PATH}" ]]; then
+  # shellcheck source=/dev/null
+  source "${OMBIST_PROVISION_LIB_PATH}"
+elif [[ -s "${_OMBIST_PROVISION_DIR}/provision-lib-common.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${_OMBIST_PROVISION_DIR}/provision-lib-common.sh"
+fi
+
 : "${OMBIST_TLS_PUBLIC_HOST:?OMBIST_TLS_PUBLIC_HOST is required (cert SAN / iOS host)}"
 : "${OMBIST_WSS_PORT:?OMBIST_WSS_PORT is required}"
 : "${OPENCLAW_MACHINE_SEED:?OPENCLAW_MACHINE_SEED is required}"
@@ -58,6 +67,44 @@ as_root() {
   "${ROOT_PREFIX[@]}" "$@"
 }
 
+# apt-get with wait-for-lock + retries (dpkg held by unattended-upgrades / parallel apt).
+# Env: OMBIST_APT_RETRY_MAX (default 40), OMBIST_APT_RETRY_DELAY_SEC (default 8),
+# OMBIST_DPKG_LOCK_TIMEOUT_SEC (default 240, passed to apt -o), OMBIST_APT_NO_DPKG_LOCK_TIMEOUT=1 to skip that -o on old apt.
+ombist_root_apt_get() {
+  if declare -F ombist_wait_for_apt_lock >/dev/null 2>&1; then
+    ombist_wait_for_apt_lock || return 1
+  fi
+  local max="${OMBIST_APT_RETRY_MAX:-40}"
+  local delay="${OMBIST_APT_RETRY_DELAY_SEC:-8}"
+  local attempt=1 out
+  local lock_re='Could not get lock|Unable to acquire the dpkg frontend lock|Unable to lock the administration directory|dpkg frontend is locked|Another app is currently holding|is another apt process|Could not open lock file'
+  local -a opts=()
+  if [[ "${OMBIST_APT_NO_DPKG_LOCK_TIMEOUT:-0}" != "1" ]]; then
+    opts+=(-o "DPkg::Lock::Timeout=${OMBIST_DPKG_LOCK_TIMEOUT_SEC:-240}" -o Acquire::Retries=3)
+  fi
+  while [[ "${attempt}" -le "${max}" ]]; do
+    if out=$(as_root env DEBIAN_FRONTEND=noninteractive apt-get "${opts[@]}" "$@" 2>&1); then
+      [[ -n "${out}" ]] && printf '%s\n' "${out}"
+      return 0
+    fi
+    if grep -Eiq "${lock_re}" <<<"${out}"; then
+      echo "ombist-provision-single-bot: dpkg/apt busy, retry in ${delay}s (${attempt}/${max})..." >&2
+      sleep "${delay}"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    if [[ "${OMBIST_APT_NO_DPKG_LOCK_TIMEOUT:-0}" != "1" ]] && grep -Eiq 'Unknown configuration option:.*DPkg::Lock::Timeout|Unrecognized option.*DPkg::Lock::Timeout' <<<"${out}"; then
+      echo "ombist-provision-single-bot: apt has no DPkg::Lock::Timeout; set OMBIST_APT_NO_DPKG_LOCK_TIMEOUT=1 or upgrade apt; retrying without it..." >&2
+      OMBIST_APT_NO_DPKG_LOCK_TIMEOUT=1 ombist_root_apt_get "$@"
+      return $?
+    fi
+    printf '%s\n' "${out}" >&2
+    return 1
+  done
+  echo "ombist-provision-single-bot: apt still blocked after ${max} retries" >&2
+  return 1
+}
+
 run_as_ombot() {
   if [[ "$(id -u)" -eq 0 ]]; then
     su -s /bin/bash - "${OMBOT_USER}" -c "$1"
@@ -89,53 +136,50 @@ as_root chown -R "${OMBOT_USER}:${OMBOT_GROUP}" "${INSTALL_ROOT}" "${OMBOT_DATA_
 as_root chmod 750 "${INSTALL_ROOT}" "${OMBOT_DATA_DIR}"
 as_root chmod 711 "${TLS_DIR}"
 
+echo "ombist-provision-single-bot: ensuring git (for Ombot clone / ombot-admin)..."
+if ! command -v git >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    ombist_root_apt_get update -y && ombist_root_apt_get install -y git
+  elif command -v dnf >/dev/null 2>&1; then
+    as_root dnf install -y git
+  elif command -v yum >/dev/null 2>&1; then
+    as_root yum install -y git
+  else
+    echo "ombist-provision-single-bot: git is required but no supported package manager found" >&2
+    exit 1
+  fi
+fi
+
+echo "ombist-provision-single-bot: cloning Ombot (early for ombot-admin + TLS helpers)..."
+if as_root test -d "${OMBOT_REPO_DIR}/.git"; then
+  run_as_ombot "git -C '${OMBOT_REPO_DIR}' pull --ff-only"
+else
+  as_root rm -rf "${OMBOT_REPO_DIR}"
+  run_as_ombot "git clone --depth 1 '${OMBOT_GIT_URL}' '${OMBOT_REPO_DIR}'"
+fi
+
+if [[ -f "${OMBOT_REPO_DIR}/tools/ombot-admin" ]]; then
+  echo "ombist-provision-single-bot: installing ombot-admin to ${OMBOT_BIN_DIR}..."
+  as_root install -m 0755 "${OMBOT_REPO_DIR}/tools/ombot-admin" "${OMBOT_BIN_DIR}/ombot-admin"
+  as_root rm -rf "${OMBOT_BIN_DIR}/ombot-admin-lib"
+  as_root mkdir -p "${OMBOT_BIN_DIR}/ombot-admin-lib"
+  as_root cp -a "${OMBOT_REPO_DIR}/tools/ombot-admin-lib/." "${OMBOT_BIN_DIR}/ombot-admin-lib/"
+  as_root chown -R root:root "${OMBOT_BIN_DIR}/ombot-admin" "${OMBOT_BIN_DIR}/ombot-admin-lib"
+fi
+
+ombist_as_root() {
+  as_root "$@"
+}
+
 echo "ombist-provision-single-bot: TLS (Root CA + server cert)..."
 PUBHOST="${OMBIST_TLS_PUBLIC_HOST}"
-SAN_LINE="DNS:${PUBHOST}"
-if [[ "${PUBHOST}" =~ ^[0-9.]+$ ]]; then
-  SAN_LINE="IP:${PUBHOST}"
-elif [[ "${PUBHOST}" == *:* ]]; then
-  SAN_LINE="IP:${PUBHOST}"
-fi
-
-as_root openssl genrsa -out "${TLS_DIR}/RootCA.key" 4096
-as_root openssl req -x509 -new -nodes -key "${TLS_DIR}/RootCA.key" -sha256 -days 3650 \
-  -subj "/CN=Ombist Single-Bot Root CA" -out "${TLS_DIR}/RootCA.crt"
-as_root openssl genrsa -out "${TLS_DIR}/server.key" 2048
-as_root openssl req -new -key "${TLS_DIR}/server.key" -out "${TLS_DIR}/server.csr" \
-  -subj "/CN=${PUBHOST}"
-as_root tee "${TLS_DIR}/server.ext" >/dev/null <<EOF
-authorityKeyIdentifier=keyid,issuer
-basicConstraints=CA:FALSE
-keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
-subjectAltName = @alt_names
-[alt_names]
-${SAN_LINE}
-EOF
-
-# 由 CSR + Root CA 簽出 leaf（Nginx / TLS 實際使用 server.crt，唔使用 CSR）
-echo "ombist-provision-single-bot: TLS sign server.crt from CSR..."
-if ! as_root openssl x509 -req -in "${TLS_DIR}/server.csr" \
-  -CA "${TLS_DIR}/RootCA.crt" -CAkey "${TLS_DIR}/RootCA.key" \
-  -CAcreateserial -out "${TLS_DIR}/server.crt" -days 825 -sha256 \
-  -extfile "${TLS_DIR}/server.ext"; then
-  echo "ombist-provision-single-bot: openssl x509 signing failed (server.crt not created)" >&2
-  exit 1
-fi
-if [[ ! -s "${TLS_DIR}/server.crt" ]]; then
-  echo "ombist-provision-single-bot: server.crt missing or empty after signing" >&2
-  exit 1
-fi
-if ! as_root openssl x509 -in "${TLS_DIR}/server.crt" -noout -subject -ext subjectAltName >/dev/null 2>&1; then
-  echo "ombist-provision-single-bot: server.crt unreadable by openssl after write" >&2
+# shellcheck source=/dev/null
+source "${OMBOT_BIN_DIR}/ombot-admin-lib/tls.sh"
+if ! ombist_tls_provision_initial "${PUBHOST}"; then
+  echo "ombist-provision-single-bot: TLS generation failed" >&2
   exit 1
 fi
 echo "ombist-provision-single-bot: server.crt OK (leaf signed)"
-
-as_root chmod 640 "${TLS_DIR}/RootCA.key" "${TLS_DIR}/server.key"
-as_root chmod 644 "${TLS_DIR}/RootCA.crt" "${TLS_DIR}/server.crt"
-as_root chown root:root "${TLS_DIR}/RootCA.key" "${TLS_DIR}/server.key"
-as_root chown root:root "${TLS_DIR}/RootCA.crt" "${TLS_DIR}/server.crt"
 
 echo "ombist-provision-single-bot: installing nvm/node/openclaw..."
 run_as_ombot "mkdir -p '${NPM_PREFIX}'"
@@ -148,13 +192,7 @@ export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 npm install -g openclaw@latest"
 
-echo "ombist-provision-single-bot: cloning Ombot..."
-if as_root test -d "${OMBOT_REPO_DIR}/.git"; then
-  run_as_ombot "git -C '${OMBOT_REPO_DIR}' pull --ff-only"
-else
-  as_root rm -rf "${OMBOT_REPO_DIR}"
-  run_as_ombot "git clone --depth 1 '${OMBOT_GIT_URL}' '${OMBOT_REPO_DIR}'"
-fi
+echo "ombist-provision-single-bot: updating Ombot dependencies (repo already cloned)..."
 run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; npm --prefix '${OMBOT_REPO_DIR}' install --omit=dev"
 
 echo "ombist-provision-single-bot: OmbRouter + plugin..."
@@ -285,7 +323,7 @@ EOF
 echo "ombist-provision-single-bot: Nginx..."
 if ! command -v nginx >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then
-    as_root apt-get update -y && as_root DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
+    ombist_root_apt_get update -y && ombist_root_apt_get install -y nginx
   elif command -v dnf >/dev/null 2>&1; then
     as_root dnf install -y nginx
   elif command -v yum >/dev/null 2>&1; then
