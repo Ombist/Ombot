@@ -38,10 +38,13 @@ ombist_tls_provision_initial() {
   ombist_as_root openssl genrsa -out "${TLS_DIR}/server.key" 2048
   ombist_as_root openssl req -new -key "${TLS_DIR}/server.key" -out "${TLS_DIR}/server.csr" \
     -subj "/CN=${pubhost}"
+  # Leaf must be valid for TLS *server* on iOS (SecTrust). Avoid dataEncipherment/nonRepudiation
+  # on server certs — Apple often rejects with "certificate is not permitted for this usage".
   ombist_as_root tee "${TLS_DIR}/server.ext" >/dev/null <<EOF
 authorityKeyIdentifier=keyid,issuer
 basicConstraints=CA:FALSE
-keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 [alt_names]
 $(ombist_tls_alt_names_ini_lines "${pubhost}")
