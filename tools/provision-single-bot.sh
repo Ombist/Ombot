@@ -311,7 +311,11 @@ as_root tee "${WRAPPER_GW}" >/dev/null <<EOF
 set -euo pipefail
 export NPM_CONFIG_PREFIX="${NPM_PREFIX}"
 export PATH="\${NPM_CONFIG_PREFIX}/bin:\${PATH}"
-exec openclaw gateway --config "${OPENCLAW_CONFIG_PATH}" --port ${OPENCLAW_GATEWAY_PORT}
+# openclaw CLI changed across versions; keep compatibility for both old/new flags.
+if openclaw gateway --help 2>&1 | grep -q -- '--config'; then
+  exec openclaw gateway --config "${OPENCLAW_CONFIG_PATH}" --port ${OPENCLAW_GATEWAY_PORT}
+fi
+exec openclaw gateway --port ${OPENCLAW_GATEWAY_PORT}
 EOF
 as_root chown root:"${OMBOT_GROUP}" "${WRAPPER_GW}"
 as_root chmod 750 "${WRAPPER_GW}"
