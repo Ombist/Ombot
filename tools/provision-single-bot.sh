@@ -127,11 +127,21 @@ run_as_ombot() {
 require_active_service() {
   local svc="$1"
   local state
-  state="$(as_root systemctl is-active "${svc}" 2>/dev/null || true)"
-  if [[ "${state}" != "active" ]]; then
-    echo "ombist-provision-single-bot: ${svc} not active (state=${state:-unknown})" >&2
-    exit 20
-  fi
+  local wait_seconds="${2:-45}"
+  local i
+  for ((i=0; i<=wait_seconds; i++)); do
+    state="$(as_root systemctl is-active "${svc}" 2>/dev/null || true)"
+    if [[ "${state}" == "active" ]]; then
+      return 0
+    fi
+    if [[ "${state}" == "failed" || "${state}" == "inactive" || "${state}" == "deactivating" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  echo "ombist-provision-single-bot: ${svc} not active after ${wait_seconds}s (state=${state:-unknown})" >&2
+  as_root systemctl --no-pager -l status "${svc}" 2>&1 | tail -n 80 >&2 || true
+  exit 20
 }
 
 ombist_setup_provision_logging
