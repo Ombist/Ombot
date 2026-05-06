@@ -35,8 +35,27 @@ ombist_cmd_systemctl_monitor_main() {
     printf '{"unit":"%s","activeState":"%s","statusB64":"%s","error":null}' "$u" "$a" "$sb64"
   }
 
+  # Ombist_IOS provision installs ombist-* units; README/manual path uses legacy names.
+  has_unit_file() {
+    local u="$1"
+    if [ -n "$SYS" ]; then
+      $SYS systemctl list-unit-files 2>/dev/null | grep -q "^${u}"
+    else
+      systemctl list-unit-files 2>/dev/null | grep -q "^${u}"
+    fi
+  }
+
+  local OMBOT_UNIT="ombot.service"
+  local GW_UNIT="openclaw-gateway@Ombist_IOS.service"
+  if has_unit_file "ombist-ombot.service"; then
+    OMBOT_UNIT="ombist-ombot.service"
+  fi
+  if has_unit_file "ombist-openclaw-gateway.service"; then
+    GW_UNIT="ombist-openclaw-gateway.service"
+  fi
+
   local inner
-  inner="$(printf '{"error":null,"services":[%s,%s]}' "$(svc_json "ombot.service")" "$(svc_json "openclaw-gateway@Ombist_IOS.service")")"
+  inner="$(printf '{"error":null,"services":[%s,%s]}' "$(svc_json "$OMBOT_UNIT")" "$(svc_json "$GW_UNIT")")"
   local data
   data="$(printf '{"monitor":%s}' "${inner}")"
   ombist_emit_envelope true "systemctl_monitor" "systemd status collected." "${data}" "[]" "[]"

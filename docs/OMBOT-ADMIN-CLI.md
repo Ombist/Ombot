@@ -33,7 +33,7 @@ On failure: `ok: false` and `errors: [{ "code": "NO_SUDO", "message": "..." }]`.
 | `ombot-admin preflight --json` | OS / tools / network reachability probe |
 | `ombot-admin tls rotate --pub-host <host> [--client-root-ca-sha256 <hex>] --json` | Regenerate `/etc/ombot/tls` and reload nginx if valid |
 | `ombot-admin tls show --json` | Inspect current server cert / SAN |
-| `ombot-admin systemctl monitor --json` | `ombot.service` + `openclaw-gateway@Ombist_IOS.service` status JSON |
+| `ombot-admin systemctl monitor --json` | Two services: for each role, uses **`ombist-ombot.service` / `ombist-openclaw-gateway.service`** when that unit appears in `systemctl list-unit-files`, otherwise falls back to **`ombot.service` / `openclaw-gateway@Ombist_IOS.service`** (manual/README install). Same JSON shape as before. |
 | `ombot-admin ombrouter install [--pinned-ref <sha>] --json` | Clone/build OmbRouter and `openclaw plugins install` |
 | `ombot-admin ombot health-port ensure-internal --json` | Restrict Ombot `HEALTH_PORT` to localhost + tailnet |
 
@@ -46,5 +46,7 @@ On failure: `ok: false` and `errors: [{ "code": "NO_SUDO", "message": "..." }]`.
 ## iOS integration
 
 Ombist_IOS calls the above via SSH + a small bash stub (`OmbotAdminCli`). If `ombot-admin` is missing, the app shows an error asking the operator to run **single-bot full reprovision** once so the tool is installed from the Ombot git checkout.
+
+After changing `systemctl monitor` behavior, machines must run an **`ombot-admin` copy that includes the update** (redeploy from a current Ombot checkout, or copy updated files under `/opt/ombot/bin/ombot-admin-lib/`) so **「檢查遠端服務」** reports `ombist-*` units instead of legacy names on iOS-provisioned hosts.
 
 First-time single-bot provision still emits the legacy `PROVISION_SUMMARY_*` / `ROOTCA_PEM_B64_*` markers for the bundled `provision-single-bot.sh` path.
