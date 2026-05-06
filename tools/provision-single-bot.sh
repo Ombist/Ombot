@@ -28,7 +28,6 @@ OMBOT_GIT_URL="${OMBOT_GIT_URL:-https://github.com/Ombist/Ombot.git}"
 OMBROUTER_GIT_URL="${OMBROUTER_GIT_URL:-https://github.com/Ombist/OmbRouter.git}"
 OPENCLAW_GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
 OPENCLAW_GATEWAY_TOKEN="${OPENCLAW_GATEWAY_TOKEN:-}"
-NVM_VERSION="${NVM_VERSION:-v0.40.1}"
 
 OMBOT_USER="${OMBOT_USER:-ombot}"
 OMBOT_GROUP="${OMBOT_GROUP:-ombot}"
@@ -65,6 +64,18 @@ fi
 
 as_root() {
   "${ROOT_PREFIX[@]}" "$@"
+}
+
+LOG_DIR="${OMBIST_PROVISION_LOG_DIR:-/var/log/ombist}"
+LOG_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+LOG_FILE="${LOG_DIR}/provision-single-bot-${LOG_STAMP}.log"
+
+ombist_setup_provision_logging() {
+  as_root mkdir -p "${LOG_DIR}"
+  as_root touch "${LOG_FILE}"
+  as_root chmod 640 "${LOG_FILE}" || true
+  exec > >(tee -a "${LOG_FILE}") 2>&1
+  echo "ombist-provision-single-bot: full log file: ${LOG_FILE}"
 }
 
 # apt-get with wait-for-lock + retries (dpkg held by unattended-upgrades / parallel apt).
@@ -122,6 +133,10 @@ require_active_service() {
     exit 20
   fi
 }
+
+ombist_setup_provision_logging
+
+trap 'rc=$?; if [[ "${rc}" -ne 0 ]]; then echo "ombist-provision-single-bot: failed (exit=${rc}); full log: ${LOG_FILE}" >&2; fi' EXIT
 
 echo "ombist-provision-single-bot: service account and dirs..."
 if ! getent group "${OMBOT_GROUP}" >/dev/null 2>&1; then
@@ -192,19 +207,37 @@ if ! ombist_tls_provision_initial "${PUBHOST}"; then
 fi
 echo "ombist-provision-single-bot: server.crt OK (leaf signed)"
 
-echo "ombist-provision-single-bot: installing nvm/node/openclaw..."
+echo "ombist-provision-single-bot: ensuring nodejs/npm via system package manager..."
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    ombist_root_apt_get update -y && ombist_root_apt_get install -y nodejs npm
+  elif command -v dnf >/dev/null 2>&1; then
+    as_root dnf install -y nodejs npm || as_root dnf install -y nodejs
+  elif command -v yum >/dev/null 2>&1; then
+    as_root yum install -y nodejs npm || as_root yum install -y nodejs
+  else
+    echo "ombist-provision-single-bot: nodejs/npm is required but no supported package manager found" >&2
+    exit 1
+  fi
+fi
+if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+  echo "ombist-provision-single-bot: nodejs/npm install step finished but node or npm still unavailable" >&2
+  exit 1
+fi
+NODE_MAJOR="$(node -p 'process.versions.node.split(\".\")[0]' 2>/dev/null || echo 0)"
+if [[ "${NODE_MAJOR}" -lt 18 ]]; then
+  echo "ombist-provision-single-bot: node version too old (found $(node -v 2>/dev/null || echo unknown), require >= 18)" >&2
+  exit 1
+fi
+
+echo "ombist-provision-single-bot: installing openclaw..."
 run_as_ombot "mkdir -p '${NPM_PREFIX}'"
-run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; \
-if [[ ! -s \"\${NVM_DIR}/nvm.sh\" ]]; then curl -fsSL 'https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh' | bash; fi; \
-source \"\${NVM_DIR}/nvm.sh\"; \
-if ! nvm use 22 >/dev/null 2>&1; then nvm install 22 >/dev/null; nvm alias default 22 >/dev/null; fi; \
-nvm use 22 >/dev/null; \
-export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
+run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 npm install -g openclaw@latest"
 
 echo "ombist-provision-single-bot: updating Ombot dependencies (repo already cloned)..."
-run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; npm --prefix '${OMBOT_REPO_DIR}' install --omit=dev"
+run_as_ombot "npm --prefix '${OMBOT_REPO_DIR}' install --omit=dev"
 
 echo "ombist-provision-single-bot: OmbRouter + plugin..."
 if as_root test -d "${OMBROUTER_REPO_DIR}/.git"; then
@@ -213,12 +246,10 @@ else
   as_root rm -rf "${OMBROUTER_REPO_DIR}"
   run_as_ombot "git clone --depth 1 '${OMBROUTER_GIT_URL}' '${OMBROUTER_REPO_DIR}'"
 fi
-run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
-export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
+run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 cd '${OMBROUTER_REPO_DIR}' && npm install && npm run build && npm install -g ."
-run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
-export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
+run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 cd '${OMBROUTER_REPO_DIR}' && \
 if command -v timeout >/dev/null 2>&1; then \
@@ -259,9 +290,6 @@ WRAPPER_GW="${OMBOT_BIN_DIR}/run-openclaw-gateway.sh"
 as_root tee "${WRAPPER_GW}" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-export NVM_DIR="${OMBOT_HOME}/.nvm"
-source "\${NVM_DIR}/nvm.sh"
-nvm use 22 >/dev/null
 export NPM_CONFIG_PREFIX="${NPM_PREFIX}"
 export PATH="\${NPM_CONFIG_PREFIX}/bin:\${PATH}"
 exec openclaw gateway --config "${OPENCLAW_CONFIG_PATH}" --port ${OPENCLAW_GATEWAY_PORT}
@@ -273,9 +301,6 @@ WRAPPER_OMBOT="${OMBOT_BIN_DIR}/run-ombot.sh"
 as_root tee "${WRAPPER_OMBOT}" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-export NVM_DIR="${OMBOT_HOME}/.nvm"
-source "\${NVM_DIR}/nvm.sh"
-nvm use 22 >/dev/null
 set -a
 source "${OMBOT_ENV_PATH}"
 set +a
@@ -422,6 +447,7 @@ echo "gateway_port=${OPENCLAW_GATEWAY_PORT}"
 echo "gateway_state=${GW_STATE}"
 echo "ombot_state=${OMBOT_STATE}"
 echo "nginx_state=${NGINX_STATE}"
+echo "log_file=${LOG_FILE}"
 echo "firewall_mode=${FW_MODE}"
 if [[ -n "${FW_WARNING}" ]]; then
   echo "warning=${FW_WARNING}"
