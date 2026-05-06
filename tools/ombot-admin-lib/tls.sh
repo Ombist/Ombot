@@ -40,10 +40,17 @@ ombist_tls_provision_initial() {
     -subj "/CN=${pubhost}"
   # Leaf must be valid for TLS *server* on iOS (SecTrust). Avoid dataEncipherment/nonRepudiation
   # on server certs — Apple often rejects with "certificate is not permitted for this usage".
+  # Use an explicit [v3_ombist] section + -extensions so OpenSSL 1.1/3.x always applies the same
+  # extensions; -clrext drops any extensions embedded in the CSR (openssl may otherwise merge
+  # or copy them depending on version / openssl.cnf).
   ombist_as_root tee "${TLS_DIR}/server.ext" >/dev/null <<EOF
-authorityKeyIdentifier=keyid,issuer
-basicConstraints=CA:FALSE
-keyUsage = digitalSignature, keyEncipherment
+[v3_ombist]
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+basicConstraints = CA:FALSE
+# ECDHE-only (TLS 1.2+ / 1.3) server authentication; omit keyEncipherment to avoid strict
+# platform policies that reject RSA leaf certs for SSL when keyEncipherment is set.
+keyUsage = digitalSignature
 extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 [alt_names]
@@ -53,7 +60,7 @@ EOF
   if ! ombist_as_root openssl x509 -req -in "${TLS_DIR}/server.csr" \
     -CA "${TLS_DIR}/RootCA.crt" -CAkey "${TLS_DIR}/RootCA.key" \
     -CAcreateserial -out "${TLS_DIR}/server.crt" -days 825 -sha256 \
-    -extfile "${TLS_DIR}/server.ext"; then
+    -extfile "${TLS_DIR}/server.ext" -extensions v3_ombist -clrext; then
     echo "ombist_tls: openssl x509 signing failed" >&2
     return 1
   fi
