@@ -239,7 +239,7 @@ npm install -g openclaw@latest"
 echo "ombist-provision-single-bot: updating Ombot dependencies (repo already cloned)..."
 run_as_ombot "npm --prefix '${OMBOT_REPO_DIR}' install --omit=dev"
 
-echo "ombist-provision-single-bot: OmbRouter + plugin..."
+echo "ombist-provision-single-bot: OmbRouter (without OpenClaw plugin registration)..."
 if as_root test -d "${OMBROUTER_REPO_DIR}/.git"; then
   run_as_ombot "git -C '${OMBROUTER_REPO_DIR}' pull --ff-only"
 else
@@ -249,14 +249,6 @@ fi
 run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 cd '${OMBROUTER_REPO_DIR}' && npm install && npm run build && npm install -g ."
-run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
-export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
-cd '${OMBROUTER_REPO_DIR}' && \
-if command -v timeout >/dev/null 2>&1; then \
-  timeout 300 openclaw plugins install . --force || timeout 300 openclaw plugins install .; \
-else \
-  openclaw plugins install . --force || openclaw plugins install .; \
-fi"
 
 echo "ombist-provision-single-bot: OpenClaw config..."
 as_root tee "${OPENCLAW_CONFIG_PATH}" >/dev/null <<EOF

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Clone/build OmbRouter and register OpenClaw plugin (runs as SSH user, not ombot).
+# Clone/build OmbRouter without OpenClaw plugin registration (runs as SSH user, not ombot).
 # shellcheck shell=bash
 
 ombist_cmd_ombrouter_install_main() {
@@ -31,13 +31,7 @@ ombist_cmd_ombrouter_install_main() {
   npm install
   npm run build
   npm install -g .
-  if command -v openclaw >/dev/null 2>&1; then
-    if command -v timeout >/dev/null 2>&1; then
-      timeout 300 openclaw plugins install "${SRC_DIR}" --force || timeout 300 openclaw plugins install "${SRC_DIR}" || true
-    else
-      openclaw plugins install "${SRC_DIR}" --force || openclaw plugins install "${SRC_DIR}" || true
-    fi
-  fi
+  # Intentionally skip `openclaw plugins install` for OmbRouter.
   if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
     if sudo -n systemctl list-unit-files 2>/dev/null | grep -q '^ombist-openclaw-gateway.service'; then
       sudo -n systemctl restart ombist-openclaw-gateway.service || true

@@ -2,7 +2,7 @@
 # Strict headless install (order):
 # 1) OpenClaw CLI (global npm) + loopback gateway unit
 # 2) Ombot repo + production deps
-# 3) OmbRouter: clone, build, npm -g, openclaw plugins install (plugin runs inside gateway)
+# 3) OmbRouter: clone, build, npm -g (no OpenClaw plugin registration)
 # 4) systemd: start gateway first, then Ombot (After= gateway)
 # - host firewall guard for 18789
 
@@ -124,7 +124,7 @@ else
 fi
 run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; npm --prefix '${OMBOT_REPO_DIR}' install --omit=dev"
 
-echo "ombist-provision: cloning/building OmbRouter and registering OpenClaw plugin..."
+echo "ombist-provision: cloning/building OmbRouter (without OpenClaw plugin registration)..."
 if as_root test -d "${OMBROUTER_REPO_DIR}/.git"; then
   run_as_ombot "git -C '${OMBROUTER_REPO_DIR}' pull --ff-only"
 else
@@ -135,15 +135,6 @@ run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"
 export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 cd '${OMBROUTER_REPO_DIR}' && npm install && npm run build && npm install -g ."
-run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
-export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
-export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
-cd '${OMBROUTER_REPO_DIR}' && \
-if command -v timeout >/dev/null 2>&1; then \
-  timeout 300 openclaw plugins install . --force || timeout 300 openclaw plugins install .; \
-else \
-  openclaw plugins install . --force || openclaw plugins install .; \
-fi"
 
 # Optional: seed OpenClaw agent workspace (*.md) from env OPENCLAW_WS_*_B64
 OPENCLAW_WORKSPACE_DIR="${OMBOT_HOME}/.openclaw/workspace"
