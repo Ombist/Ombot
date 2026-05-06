@@ -224,7 +224,7 @@ if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
   echo "ombist-provision-single-bot: nodejs/npm install step finished but node or npm still unavailable" >&2
   exit 1
 fi
-NODE_MAJOR="$(node -p 'process.versions.node.split(\".\")[0]' 2>/dev/null || echo 0)"
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
 if [[ "${NODE_MAJOR}" -lt 18 ]]; then
   echo "ombist-provision-single-bot: node version too old (found $(node -v 2>/dev/null || echo unknown), require >= 18)" >&2
   exit 1
