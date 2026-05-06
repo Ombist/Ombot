@@ -3,7 +3,7 @@
 # Install: /opt/ombot/bin/ombot-admin + /opt/ombot/bin/ombot-admin-lib/
 set -uo pipefail
 
-OMBOT_ADMIN_VERSION="1.0.0"
+OMBOT_ADMIN_VERSION="1.0.1"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="${ROOT}/ombot-admin-lib"
 

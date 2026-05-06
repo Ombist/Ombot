@@ -33,7 +33,7 @@ On failure: `ok: false` and `errors: [{ "code": "NO_SUDO", "message": "..." }]`.
 | `ombot-admin preflight --json` | OS / tools / network reachability probe |
 | `ombot-admin tls rotate --pub-host <host> [--client-root-ca-sha256 <hex>] --json` | Regenerate `/etc/ombot/tls` and reload nginx if valid |
 | `ombot-admin tls show --json` | Inspect current server cert / SAN |
-| `ombot-admin systemctl monitor --json` | Two services: for each role, uses **`ombist-ombot.service` / `ombist-openclaw-gateway.service`** when that unit appears in `systemctl list-unit-files`, otherwise falls back to **`ombot.service` / `openclaw-gateway@Ombist_IOS.service`** (manual/README install). Same JSON shape as before. |
+| `ombot-admin systemctl monitor --json` | Two services: for each role, prefers **`ombist-ombot.service` / `ombist-openclaw-gateway.service`** when the matching file exists under **`/etc/systemd/system/`** (Ombist_IOS provision layout), else if `systemctl cat <unit>` succeeds, else falls back to **`ombot.service` / `openclaw-gateway@Ombist_IOS.service`** (manual/README install). `--no-pager` on `systemctl` calls. Same JSON shape as before. |
 | `ombot-admin ombrouter install [--pinned-ref <sha>] --json` | Clone/build OmbRouter and `openclaw plugins install` |
 | `ombot-admin ombot health-port ensure-internal --json` | Restrict Ombot `HEALTH_PORT` to localhost + tailnet |
 
