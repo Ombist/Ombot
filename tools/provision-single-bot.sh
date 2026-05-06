@@ -241,7 +241,7 @@ if [[ "${NODE_MAJOR}" -lt 22 ]]; then
     ombist_root_apt_get update -y
     ombist_root_apt_get install -y ca-certificates curl gnupg
     as_root mkdir -p /etc/apt/keyrings
-    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | as_root gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | as_root gpg --dearmor --batch --yes -o /etc/apt/keyrings/nodesource.gpg
     echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | as_root tee /etc/apt/sources.list.d/nodesource.list >/dev/null
     ombist_root_apt_get update -y
     ombist_root_apt_get install -y nodejs
