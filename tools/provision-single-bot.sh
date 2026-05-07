@@ -144,6 +144,22 @@ require_active_service() {
   exit 20
 }
 
+assert_openclaw_gateway_mode_local() {
+  local cfg="$1"
+  local mode=""
+  if command -v node >/dev/null 2>&1; then
+    mode="$(as_root env OMBIST_CFG_PATH="${cfg}" node -e "const fs=require('fs');try{const p=process.env.OMBIST_CFG_PATH||'';const j=JSON.parse(fs.readFileSync(p,'utf8'));process.stdout.write(String((j.gateway&&j.gateway.mode)||''));}catch(e){process.stdout.write('');}")" || mode=""
+  fi
+  if [[ "${mode}" == "local" ]]; then
+    return 0
+  fi
+  if as_root test -r "${cfg}" && as_root grep -Eq '"mode"[[:space:]]*:[[:space:]]*"local"' "${cfg}"; then
+    return 0
+  fi
+  echo "ombist-provision-single-bot: invalid OpenClaw config (${cfg}); require gateway.mode=local before starting gateway service" >&2
+  exit 27
+}
+
 ombist_setup_provision_logging
 
 trap 'rc=$?; if [[ "${rc}" -ne 0 ]]; then echo "ombist-provision-single-bot: failed (exit=${rc}); full log: ${LOG_FILE}" >&2; fi' EXIT
@@ -299,6 +315,18 @@ as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
   echo "OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0"
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
   echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
+  fi
+  if [[ -n "${OPENAI_BASE_URL:-}" ]]; then
+    echo "OPENAI_BASE_URL=${OPENAI_BASE_URL}"
+  fi
+  if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
+  fi
+  if [[ -n "${GOOGLE_API_KEY:-}" ]]; then
+    echo "GOOGLE_API_KEY=${GOOGLE_API_KEY}"
+  fi
   if [[ -n "${OPENCLAW_GATEWAY_TOKEN:-}" ]]; then
     echo "OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}"
   fi
@@ -344,6 +372,7 @@ Wants=network-online.target
 Type=simple
 User=${OMBOT_USER}
 Group=${OMBOT_GROUP}
+EnvironmentFile=${OMBOT_ENV_PATH}
 ExecStart=${WRAPPER_GW}
 Restart=on-failure
 RestartSec=5
@@ -431,6 +460,7 @@ as_root systemctl enable nginx.service
 as_root systemctl restart nginx.service
 
 echo "ombist-provision-single-bot: systemd restart (gateway then ombot)..."
+assert_openclaw_gateway_mode_local "${OPENCLAW_CONFIG_PATH}"
 as_root systemctl daemon-reload
 as_root systemctl enable ombist-openclaw-gateway.service ombist-ombot.service
 as_root systemctl restart ombist-openclaw-gateway.service

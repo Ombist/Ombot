@@ -154,6 +154,7 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_REQUIRE_MIDDLEWARE_T
 - 建立 `systemd` 單元：`ombist-openclaw-gateway.service`、`ombist-ombot.service`（皆以 `User=ombot` 執行）。
 - 嘗試啟用主機防火牆（`ufw` / `iptables` / `nft`）封鎖外部入站 `tcp/18789`；若缺少工具，摘要會回 `warning=firewall_tool_missing`（降級安全模式）。
 - 腳本會輸出 `PROVISION_SUMMARY_BEGIN/END` 區段，含 `gateway_bind_ok`、service 狀態、`firewall_mode`，供 iOS 顯示成功或警告。
+- 若修改核心佈署腳本，建議先跑 `tools/check-provision-sync.sh`，確認 `Ombot/tools` 與 `Ombist_IOS/Resources` 兩份核心腳本保持同步。
 
 必要環境變數：`RELAY_HOST`、`MACHINE_PORT`、`OPENCLAW_MACHINE_SEED`；可選 **`MIDDLEWARE_SCHEME`**（預設 **`wss`**；舊環境若 Ombers 前無 TLS，須明確設 `MIDDLEWARE_SCHEME=ws` 並確保 `OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0`）、`OMBOT_GIT_URL`、`MIDDLEWARE_AUTH_TOKEN`、`OPENCLAW_GATEWAY_TOKEN`。僅支援 **Linux**，且需 root 或 passwordless sudo。生產路徑請在 Ombers **MACHINE** 對外埠上 TLS（Nginx 終止或 `OMBERS_USE_TLS`），否則 `wss://` 無法握手。
 
