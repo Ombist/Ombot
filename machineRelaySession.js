@@ -15,7 +15,7 @@ import {
   signatureVerifyFailTotal,
 } from './metrics.js';
 import { computeSessionKey, middlewareWsUrlForSession } from './sessionKey.js';
-import { validateReqSignature } from './securityGuards.js';
+import { reqSigningPayloadSha256Hex, validateReqSignature } from './securityGuards.js';
 
 function assistantTextToPhoneRes(text) {
   return JSON.stringify({
@@ -324,16 +324,20 @@ export class MachineRelaySession {
       relayErrorsTotal.inc();
       if (guardResult.reason === 'replay') replayRejectTotal.inc();
       else signatureVerifyFailTotal.inc();
-      writeAuditEvent('req_rejected', {
+      const detail = {
         clientId: this.clientId,
         reason: guardResult.reason,
         traceId: this.traceId,
-      });
-      logger.warn('req_rejected', {
-        clientId: this.clientId,
-        reason: guardResult.reason,
-        traceId: this.traceId,
-      });
+      };
+      if (guardResult.reason === 'signature_invalid') {
+        try {
+          Object.assign(detail, reqSigningPayloadSha256Hex(json));
+        } catch {
+          /* ignore digest errors */
+        }
+      }
+      writeAuditEvent('req_rejected', detail);
+      logger.warn('req_rejected', detail);
       this.notifyClientJson({ type: 'error', message: guardResult.reason, traceId: this.traceId });
       return true;
     }
@@ -368,16 +372,20 @@ export class MachineRelaySession {
       relayErrorsTotal.inc();
       if (guardResult.reason === 'replay') replayRejectTotal.inc();
       else signatureVerifyFailTotal.inc();
-      writeAuditEvent('req_rejected', {
+      const detail = {
         clientId: this.clientId,
         reason: guardResult.reason,
         traceId: this.traceId,
-      });
-      logger.warn('req_rejected', {
-        clientId: this.clientId,
-        reason: guardResult.reason,
-        traceId: this.traceId,
-      });
+      };
+      if (guardResult.reason === 'signature_invalid') {
+        try {
+          Object.assign(detail, reqSigningPayloadSha256Hex(json));
+        } catch {
+          /* ignore digest errors */
+        }
+      }
+      writeAuditEvent('req_rejected', detail);
+      logger.warn('req_rejected', detail);
       this.notifyClientJson({ type: 'error', message: guardResult.reason, traceId: this.traceId });
       return true;
     }

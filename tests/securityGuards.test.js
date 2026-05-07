@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generateKeyPairFromSeed, sign } from '../ed25519.js';
-import { reqSigningPayloadStable, validateReqSignature } from '../securityGuards.js';
+import { reqSigningPayloadSha256Hex, reqSigningPayloadStable, validateReqSignature } from '../securityGuards.js';
 
 /** Mirror pre-canonical server stringification (used to simulate older iOS clients). */
 function legacySigningString(req) {
@@ -118,6 +118,22 @@ describe('security guards', () => {
       nowMs: now,
     });
     expect(ok.ok).toBe(true);
+  });
+
+  it('exposes sha256 digests for all signing variants', () => {
+    const req = {
+      type: 'req',
+      id: 'req-1',
+      method: 'agent',
+      nonce: 'abc',
+      timestamp: 1700000000000,
+      params: { message: 'HI', clientMessageId: 'msg-0' },
+    };
+    const d = reqSigningPayloadSha256Hex(req);
+    expect(d.stableSha256).toHaveLength(64);
+    expect(d.canonicalSha256).toHaveLength(64);
+    expect(d.legacySha256).toHaveLength(64);
+    expect(d.stableSha256).not.toBe(d.legacySha256);
   });
 
   it('stable signing string matches chat fixture byte-for-byte', () => {
