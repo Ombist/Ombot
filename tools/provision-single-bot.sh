@@ -415,7 +415,9 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
+        proxy_connect_timeout 60;
         proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
     }
 }
 EOF
