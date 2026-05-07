@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generateKeyPairFromSeed, sign } from '../ed25519.js';
-import { reqSigningPayload, validateReqSignature } from '../securityGuards.js';
+import { reqSigningPayloadStable, validateReqSignature } from '../securityGuards.js';
 
 /** Mirror pre-canonical server stringification (used to simulate older iOS clients). */
 function legacySigningString(req) {
@@ -26,7 +26,7 @@ describe('security guards', () => {
       timestamp: now,
       nonce: 'nonce-1',
     };
-    req.signature = sign(kp.secretKey, reqSigningPayload(req));
+    req.signature = sign(kp.secretKey, reqSigningPayloadStable(req));
     const nonceMap = new Map();
     const first = validateReqSignature({
       reqJson: req,
@@ -118,5 +118,19 @@ describe('security guards', () => {
       nowMs: now,
     });
     expect(ok.ok).toBe(true);
+  });
+
+  it('stable signing string matches chat fixture byte-for-byte', () => {
+    const req = {
+      type: 'req',
+      id: 'req-1',
+      method: 'agent',
+      nonce: 'abc',
+      timestamp: 1700000000000,
+      params: { message: 'HI', clientMessageId: 'msg-0' },
+    };
+    expect(reqSigningPayloadStable(req)).toBe(
+      '{"id":"req-1","method":"agent","nonce":"abc","params":{"clientMessageId":"msg-0","message":"HI"},"timestamp":1700000000000,"type":"req"}'
+    );
   });
 });

@@ -43,6 +43,28 @@ export function reqSigningPayload(reqJson) {
   return JSON.stringify(sortKeysDeep(body));
 }
 
+/**
+ * Byte-stable signing string (no platform JSON key-order quirks). Matches iOS
+ * `ConnectionViewModel.stableReqSigningUTF8` — root keys id, method, nonce, params, timestamp, type;
+ * params keys sorted lexicographically; values JSON.stringify'd per value.
+ */
+export function reqSigningPayloadStable(reqJson) {
+  const id = String(reqJson.id ?? '');
+  const method = String(reqJson.method ?? '');
+  const nonce = String(reqJson.nonce ?? '');
+  const type = String(reqJson.type || 'req');
+  const ts = Number(reqJson.timestamp || 0);
+  const tss = Number.isFinite(ts) ? String(Math.trunc(ts)) : '0';
+  const raw =
+    reqJson.params && typeof reqJson.params === 'object' && !Array.isArray(reqJson.params)
+      ? reqJson.params
+      : {};
+  const keys = Object.keys(raw).sort();
+  const inner = keys.map((k) => `${JSON.stringify(k)}:${JSON.stringify(raw[k])}`).join(',');
+  const paramsJson = `{${inner}}`;
+  return `{"id":${JSON.stringify(id)},"method":${JSON.stringify(method)},"nonce":${JSON.stringify(nonce)},"params":${paramsJson},"timestamp":${tss},"type":${JSON.stringify(type)}}`;
+}
+
 export function pruneSeenNonces(nonceMap, nowMs, nonceTtlMs) {
   for (const [k, ts] of nonceMap.entries()) {
     if (nowMs - ts > nonceTtlMs) nonceMap.delete(k);
@@ -69,11 +91,13 @@ export function validateReqSignature({
   if (nonceMap.has(nonce)) return { ok: false, reason: 'replay' };
   const signatureHex = String(reqJson.signature || '').trim();
   if (!signatureHex) return { ok: false, reason: 'signature_missing' };
+  const stable = reqSigningPayloadStable(reqJson);
   const canonical = reqSigningPayload(reqJson);
   const legacy = reqSigningPayloadLegacy(reqJson);
   let verified = false;
   try {
     verified =
+      verify(verifyPublicKey, stable, signatureHex) ||
       verify(verifyPublicKey, canonical, signatureHex) ||
       verify(verifyPublicKey, legacy, signatureHex);
   } catch {
