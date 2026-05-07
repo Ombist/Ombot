@@ -1,6 +1,22 @@
 import { verify } from './ed25519.js';
 
-export function reqSigningPayload(reqJson) {
+/**
+ * Deep-sort object keys so JSON.stringify matches iOS JSONSerialization(.sortedKeys)
+ * for the same logical payload (avoids cross-platform key-order signature breaks).
+ */
+function sortKeysDeep(value) {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  return Object.keys(value)
+    .sort()
+    .reduce((acc, k) => {
+      acc[k] = sortKeysDeep(value[k]);
+      return acc;
+    }, {});
+}
+
+/** Legacy wire format (matches older iOS JSONSerialization without sortedKeys). */
+function reqSigningPayloadLegacy(reqJson) {
   return JSON.stringify({
     type: reqJson.type || 'req',
     id: reqJson.id || '',
@@ -9,6 +25,22 @@ export function reqSigningPayload(reqJson) {
     timestamp: Number(reqJson.timestamp || 0),
     nonce: String(reqJson.nonce || ''),
   });
+}
+
+/**
+ * Canonical signing string (deep-sorted keys). Matches iOS JSONSerialization(.sortedKeys).
+ * Prefer this for new clients; server verification also accepts [reqSigningPayloadLegacy].
+ */
+export function reqSigningPayload(reqJson) {
+  const body = {
+    type: reqJson.type || 'req',
+    id: reqJson.id || '',
+    method: reqJson.method || '',
+    params: reqJson.params || {},
+    timestamp: Number(reqJson.timestamp || 0),
+    nonce: String(reqJson.nonce || ''),
+  };
+  return JSON.stringify(sortKeysDeep(body));
 }
 
 export function pruneSeenNonces(nonceMap, nowMs, nonceTtlMs) {
@@ -37,12 +69,17 @@ export function validateReqSignature({
   if (nonceMap.has(nonce)) return { ok: false, reason: 'replay' };
   const signatureHex = String(reqJson.signature || '').trim();
   if (!signatureHex) return { ok: false, reason: 'signature_missing' };
-  const payload = reqSigningPayload(reqJson);
+  const canonical = reqSigningPayload(reqJson);
+  const legacy = reqSigningPayloadLegacy(reqJson);
+  let verified = false;
   try {
-    if (!verify(verifyPublicKey, payload, signatureHex)) return { ok: false, reason: 'signature_invalid' };
+    verified =
+      verify(verifyPublicKey, canonical, signatureHex) ||
+      verify(verifyPublicKey, legacy, signatureHex);
   } catch {
-    return { ok: false, reason: 'signature_invalid' };
+    verified = false;
   }
+  if (!verified) return { ok: false, reason: 'signature_invalid' };
   nonceMap.set(nonce, nowMs);
   return { ok: true };
 }

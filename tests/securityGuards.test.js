@@ -2,6 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { generateKeyPairFromSeed, sign } from '../ed25519.js';
 import { reqSigningPayload, validateReqSignature } from '../securityGuards.js';
 
+/** Mirror pre-canonical server stringification (used to simulate older iOS clients). */
+function legacySigningString(req) {
+  return JSON.stringify({
+    type: req.type || 'req',
+    id: req.id || '',
+    method: req.method || '',
+    params: req.params || {},
+    timestamp: Number(req.timestamp || 0),
+    nonce: String(req.nonce || ''),
+  });
+}
+
 describe('security guards', () => {
   it('validates signature and rejects replay', () => {
     const kp = generateKeyPairFromSeed('guard-seed');
@@ -81,5 +93,30 @@ describe('security guards', () => {
     });
     expect(invalid.ok).toBe(false);
     expect(invalid.reason).toBe('signature_invalid');
+  });
+
+  it('accepts either canonical or legacy signing payload bytes', () => {
+    const kp = generateKeyPairFromSeed('guard-seed-dual');
+    const now = Date.now();
+    const req = {
+      type: 'req',
+      id: '3',
+      method: 'agent',
+      params: { message: 'hi', clientMessageId: 'msg-1' },
+      timestamp: now,
+      nonce: 'nonce-dual',
+    };
+    req.signature = sign(kp.secretKey, legacySigningString(req));
+    const nonceMap = new Map();
+    const ok = validateReqSignature({
+      reqJson: req,
+      verifyPublicKey: kp.publicKey,
+      nonceMap,
+      requireSignature: true,
+      signatureMaxAgeMs: 60_000,
+      nonceTtlMs: 300_000,
+      nowMs: now,
+    });
+    expect(ok.ok).toBe(true);
   });
 });
