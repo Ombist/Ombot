@@ -428,7 +428,15 @@ export class MachineRelaySession {
         const frame = assistantTextToPhoneRes(text);
         this.sendEncryptedToClientWs(frame);
       },
-      onError: () => {},
+      onError: (err) => {
+        const msg = err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err);
+        logger.warn('single_client_gateway_on_error', { traceId: this.traceId, message: msg });
+        this.notifyClientJson({
+          type: 'error',
+          message: msg.startsWith('gateway_') ? msg : `gateway_error:${msg}`,
+          traceId: this.traceId,
+        });
+      },
     });
     this._gatewayClient.ensureConnected();
   }

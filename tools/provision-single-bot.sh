@@ -281,6 +281,7 @@ echo "ombist-provision-single-bot: OpenClaw config..."
 as_root tee "${OPENCLAW_CONFIG_PATH}" >/dev/null <<EOF
 {
   "gateway": {
+    "mode": "local",
     "bind": "loopback",
     "port": ${OPENCLAW_GATEWAY_PORT}
   }
@@ -429,12 +430,12 @@ fi
 as_root systemctl enable nginx.service
 as_root systemctl restart nginx.service
 
-echo "ombist-provision-single-bot: systemd start..."
+echo "ombist-provision-single-bot: systemd restart (gateway then ombot)..."
 as_root systemctl daemon-reload
 as_root systemctl enable ombist-openclaw-gateway.service ombist-ombot.service
-as_root systemctl start ombist-openclaw-gateway.service
+as_root systemctl restart ombist-openclaw-gateway.service
 sleep 2
-as_root systemctl start ombist-ombot.service
+as_root systemctl restart ombist-ombot.service
 require_active_service "ombist-openclaw-gateway.service"
 require_active_service "ombist-ombot.service"
 require_active_service "nginx.service"

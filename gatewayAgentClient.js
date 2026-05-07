@@ -181,6 +181,11 @@ export class GatewayAgentClient {
       } else {
         logger.error('single_client_gateway_connect_rejected', { id, error: msg?.error });
         try {
+          this.onError(new Error(`gateway_connect_rejected:${JSON.stringify(msg?.error ?? msg)}`));
+        } catch {
+          /* ignore */
+        }
+        try {
           this.gatewayWs?.close();
         } catch {
           /* ignore */
@@ -268,7 +273,22 @@ export class GatewayAgentClient {
       this._pending.set(id, (resMsg) => {
         clearTimeout(timeout);
         const t = extractAssistantTextFromGateway(resMsg);
-        if (t) this.onAssistantText(t);
+        if (t) {
+          this.onAssistantText(t);
+        } else {
+          logger.warn('single_client_gateway_res_no_text', {
+            id,
+            ok: resMsg?.ok,
+            type: resMsg?.type,
+            snippet: (() => {
+              try {
+                return JSON.stringify(resMsg).slice(0, 400);
+              } catch {
+                return '';
+              }
+            })(),
+          });
+        }
         resolve();
       });
 

@@ -173,6 +173,7 @@ if [[ "${SEED_OPENCLAW_WORKSPACE}" -eq 1 ]]; then
   as_root tee "${OPENCLAW_CONFIG_PATH}" >/dev/null <<EOF
 {
   "gateway": {
+    "mode": "local",
     "bind": "loopback",
     "port": ${OPENCLAW_GATEWAY_PORT}
   },
@@ -186,6 +187,7 @@ else
   as_root tee "${OPENCLAW_CONFIG_PATH}" >/dev/null <<EOF
 {
   "gateway": {
+    "mode": "local",
     "bind": "loopback",
     "port": ${OPENCLAW_GATEWAY_PORT}
   }
@@ -337,10 +339,10 @@ PrivateTmp=true
 WantedBy=multi-user.target
 EOF
 
-echo "ombist-provision: enabling services (start: OpenClaw gateway → Ombot; OmbRouter runs inside gateway)..."
+echo "ombist-provision: enabling services (restart: OpenClaw gateway → Ombot; OmbRouter runs inside gateway)..."
 as_root systemctl daemon-reload
 as_root systemctl enable ombist-openclaw-gateway.service ombist-ombot.service
-as_root systemctl start ombist-openclaw-gateway.service
+as_root systemctl restart ombist-openclaw-gateway.service
 GW_BOUND="false"
 for _i in {1..45}; do
   if as_root systemctl is-active --quiet ombist-openclaw-gateway.service 2>/dev/null; then
@@ -355,7 +357,7 @@ if [[ "${GW_BOUND}" != "true" ]]; then
   echo "ombist-provision: gateway did not bind to 127.0.0.1:${OPENCLAW_GATEWAY_PORT}" >&2
   exit 21
 fi
-as_root systemctl start ombist-ombot.service
+as_root systemctl restart ombist-ombot.service
 require_active_service "ombist-openclaw-gateway.service"
 require_active_service "ombist-ombot.service"
 
