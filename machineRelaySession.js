@@ -329,6 +329,11 @@ export class MachineRelaySession {
         reason: guardResult.reason,
         traceId: this.traceId,
       });
+      logger.warn('req_rejected', {
+        clientId: this.clientId,
+        reason: guardResult.reason,
+        traceId: this.traceId,
+      });
       this.notifyClientJson({ type: 'error', message: guardResult.reason, traceId: this.traceId });
       return true;
     }
@@ -364,6 +369,11 @@ export class MachineRelaySession {
       if (guardResult.reason === 'replay') replayRejectTotal.inc();
       else signatureVerifyFailTotal.inc();
       writeAuditEvent('req_rejected', {
+        clientId: this.clientId,
+        reason: guardResult.reason,
+        traceId: this.traceId,
+      });
+      logger.warn('req_rejected', {
         clientId: this.clientId,
         reason: guardResult.reason,
         traceId: this.traceId,
