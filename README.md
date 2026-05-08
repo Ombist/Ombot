@@ -209,6 +209,9 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` | `agent` | Gateway `req.method` for a model turn |
 | `OPENCLAW_BRIDGE_MIN_PROTOCOL` / `MAX_PROTOCOL` | `1` / `9` | Passed in `connect` params |
 | `OPENCLAW_BRIDGE_ROLE` | `operator` | `connect.params.role` |
+| `OPENCLAW_BRIDGE_CLIENT_ID` | `openclaw` | `connect.params.client.id`（新版 Gateway 可能限制 allowed values） |
+| `OPENCLAW_BRIDGE_CLIENT_PLATFORM` | auto (`linux`/`darwin`/`windows`) | `connect.params.client.platform` |
+| `OPENCLAW_BRIDGE_CLIENT_MODE` | `service` | `connect.params.client.mode` |
 | `OPENCLAW_BRIDGE_OPERATOR_SCOPES` | (empty → `["operator.read","operator.write"]`) | JSON array of operator scopes on `connect` |
 | `OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID` | same as `OPENCLAW_BRIDGE_AGENT_ID` | Gateway `agent` params `agentId` on each turn |
 | `OPENCLAW_BRIDGE_REQ_TIMEOUT_MS` | `120000` | Per-turn timeout waiting for Gateway `res` |

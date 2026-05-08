@@ -36,6 +36,24 @@ function defaultGatewayScopes() {
   return ['operator.read', 'operator.write'];
 }
 
+function defaultBridgeClientPlatform() {
+  const raw = (process.env.OPENCLAW_BRIDGE_CLIENT_PLATFORM || '').trim().toLowerCase();
+  if (raw) return raw;
+  if (process.platform === 'win32') return 'windows';
+  if (process.platform === 'darwin') return 'darwin';
+  return 'linux';
+}
+
+function defaultBridgeClientMode() {
+  const raw = (process.env.OPENCLAW_BRIDGE_CLIENT_MODE || '').trim().toLowerCase();
+  return raw || 'service';
+}
+
+function defaultBridgeClientId() {
+  const raw = (process.env.OPENCLAW_BRIDGE_CLIENT_ID || '').trim();
+  return raw || 'openclaw';
+}
+
 /**
  * Outbound OpenClaw gateway WebSocket for single-client mode (no Ombers).
  * Mirrors the connect / agent handshake shape from openclawGatewayBridge.js.
@@ -157,9 +175,10 @@ export class GatewayAgentClient {
       minProtocol: Number(process.env.OPENCLAW_BRIDGE_MIN_PROTOCOL || 1),
       maxProtocol: Number(process.env.OPENCLAW_BRIDGE_MAX_PROTOCOL || 9),
       client: {
-        id: 'ombot-single-client',
-        name: 'ombot',
+        id: defaultBridgeClientId(),
         version: process.env.npm_package_version || '1.0.0',
+        platform: defaultBridgeClientPlatform(),
+        mode: defaultBridgeClientMode(),
       },
       role: (process.env.OPENCLAW_BRIDGE_ROLE || 'operator').trim(),
       scopes: defaultGatewayScopes(),

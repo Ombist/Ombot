@@ -35,6 +35,7 @@ NPM_PREFIX="${INSTALL_ROOT}/npm-global"
 
 OMBOT_ENV_PATH="${OMBOT_ENV_PATH:-/etc/ombot/ombot.env}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
+OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH:-${OMBOT_HOME}/.openclaw/openclaw.json}"
 GW_SERVICE_PATH="/etc/systemd/system/ombist-openclaw-gateway.service"
 OMBOT_SERVICE_PATH="/etc/systemd/system/ombist-ombot.service"
 
@@ -260,6 +261,21 @@ OMBIST_NODE_MERGE
   as_root rm -f "${OMBIST_MERGE_JS}" "${OMBIST_PATCH_JSON}" "${OMBIST_MERGED_JSON}"
 fi
 
+echo "ombist-provision: syncing OpenClaw runtime config under ${OPENCLAW_RUNTIME_CONFIG_PATH}..."
+as_root mkdir -p "$(dirname "${OPENCLAW_RUNTIME_CONFIG_PATH}")"
+as_root cp "${OPENCLAW_CONFIG_PATH}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
+as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
+as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
+
+echo "ombist-provision: OpenClaw CLI config set gateway.mode local (runtime config)..."
+run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
+export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
+export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
+export OPENCLAW_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
+openclaw config set gateway.mode local" || {
+  echo "ombist-provision: warning: openclaw config set gateway.mode local failed (gateway may stay on status=78/CONFIG)" >&2
+}
+
 {
   echo "PORT=${OMBOT_PORT}"
   echo "HEALTH_PORT=${OMBOT_HEALTH_PORT}"
@@ -299,7 +315,8 @@ source "\${NVM_DIR}/nvm.sh"
 nvm use 22 >/dev/null
 export NPM_CONFIG_PREFIX="${NPM_PREFIX}"
 export PATH="\${NPM_CONFIG_PREFIX}/bin:\${PATH}"
-exec openclaw gateway --config "${OPENCLAW_CONFIG_PATH}" --port ${OPENCLAW_GATEWAY_PORT}
+export OPENCLAW_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH}"
+exec openclaw gateway --port ${OPENCLAW_GATEWAY_PORT}
 EOF
 as_root chown root:"${OMBOT_GROUP}" "${WRAPPER_GW}"
 as_root chmod 750 "${WRAPPER_GW}"
@@ -337,7 +354,7 @@ Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=full
-ProtectHome=true
+ProtectHome=false
 PrivateTmp=true
 
 [Install]
