@@ -138,4 +138,82 @@ describe('mock gateway server handshake', () => {
     ws.close();
     await new Promise((r) => wss.close(r));
   });
+
+  it('supports strict connect challenge round-trip', async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise((r) => wss.on('listening', r));
+    const addr = wss.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+
+    wss.on('connection', (ws) => {
+      ws.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'req' && msg.method === 'connect') {
+          ws.send(
+            JSON.stringify({
+              type: 'res',
+              id: msg.id,
+              ok: false,
+              error: { code: 'CHALLENGE_REQUIRED', details: { challenge: { nonce: 'n-1' } } },
+            })
+          );
+          return;
+        }
+        if (msg.type === 'req' && msg.method === 'connect.challenge') {
+          expect(msg.params.nonce).toBe('n-1');
+          ws.send(
+            JSON.stringify({
+              type: 'res',
+              id: msg.id,
+              ok: true,
+              payload: { grantedScopes: ['operator.read', 'operator.write'] },
+            })
+          );
+        }
+      });
+    });
+
+    const { WebSocket } = await import('ws');
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise((resolve, reject) => {
+      ws.on('open', resolve);
+      ws.on('error', reject);
+    });
+
+    const nextJson = () =>
+      new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('timeout')), 2000);
+        ws.once('message', (d) => {
+          clearTimeout(t);
+          resolve(JSON.parse(d.toString()));
+        });
+      });
+
+    ws.send(
+      JSON.stringify({
+        type: 'req',
+        id: 'c-1',
+        method: 'connect',
+        params: { role: 'operator', scopes: ['operator.read', 'operator.write'] },
+      })
+    );
+    const first = await nextJson();
+    expect(first.ok).toBe(false);
+    expect(first.error.code).toBe('CHALLENGE_REQUIRED');
+
+    ws.send(
+      JSON.stringify({
+        type: 'req',
+        id: 'cc-1',
+        method: 'connect.challenge',
+        params: { nonce: 'n-1', timestamp: Date.now(), response: { mode: 'service' } },
+      })
+    );
+    const second = await nextJson();
+    expect(second.ok).toBe(true);
+    expect(second.payload.grantedScopes).toContain('operator.write');
+
+    ws.close();
+    await new Promise((r) => wss.close(r));
+  });
 });

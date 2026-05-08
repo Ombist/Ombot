@@ -1,5 +1,13 @@
 import { WebSocket } from 'ws';
 import { logger } from './logger.js';
+import {
+  gatewayBridgeErrorsTotal,
+  gatewayBridgeFallbackTotal,
+  gatewayBridgeGateState,
+  gatewayBridgeRejectTotal,
+} from './metrics.js';
+import { classifyGatewayError } from './gatewayErrorClassifier.js';
+import { ProviderFallbackClient } from './providerFallbackClient.js';
 
 /** Duplicated from openclawGatewayBridge.js to avoid circular imports. */
 function extractAssistantTextFromGateway(msg) {
@@ -136,6 +144,19 @@ export class GatewayAgentClient {
     this._inFlight = false;
     /** @type {Array<{ text: string, agentId: string }>} */
     this._queue = [];
+    this._strictPairingProfile = process.env.OPENCLAW_STRICT_PAIRING_PROFILE !== '0';
+    this._autoFallbackEnabled = ['1', 'true', 'yes'].includes(
+      String(process.env.OPENCLAW_BRIDGE_AUTO_FALLBACK || '')
+        .trim()
+        .toLowerCase()
+    ) && !this._strictPairingProfile;
+    this._fallbackClient = this._autoFallbackEnabled ? new ProviderFallbackClient() : null;
+    this._degradedReason = '';
+    gatewayBridgeGateState.labels('pairing').set(-1);
+    gatewayBridgeGateState.labels('scope').set(-1);
+    gatewayBridgeGateState.labels('provider').set(
+      this._fallbackClient && this._fallbackClient.isConfigured() ? 1 : -1
+    );
   }
 
   destroy() {
@@ -176,6 +197,110 @@ export class GatewayAgentClient {
     }, delay);
   }
 
+  _recordReject(phase, errorLike) {
+    const classified = classifyGatewayError(errorLike);
+    gatewayBridgeRejectTotal.labels(phase, classified.category, classified.reason).inc();
+    this._degradedReason = `${phase}:${classified.reason}`;
+    if (classified.category === 'pairing') gatewayBridgeGateState.labels('pairing').set(0);
+    if (classified.category === 'scope') gatewayBridgeGateState.labels('scope').set(0);
+    if (classified.category === 'provider') gatewayBridgeGateState.labels('provider').set(0);
+    return classified;
+  }
+
+  _extractConnectChallenge(msg) {
+    const fromPayload = msg?.payload?.challenge;
+    if (fromPayload && typeof fromPayload === 'object' && String(fromPayload.nonce || '').trim()) {
+      return fromPayload;
+    }
+    const fromError = msg?.error?.details?.challenge;
+    if (fromError && typeof fromError === 'object' && String(fromError.nonce || '').trim()) {
+      return fromError;
+    }
+    return null;
+  }
+
+  _isScopeGrantedOnConnect(msg) {
+    const granted = Array.isArray(msg?.payload?.grantedScopes) ? msg.payload.grantedScopes : [];
+    if (granted.length === 0) return true;
+    const normalized = granted
+      .filter((x) => typeof x === 'string')
+      .map((x) => x.trim().toLowerCase());
+    return normalized.includes('operator.write');
+  }
+
+  _sendConnectChallengeResponse(challenge) {
+    if (!this.gatewayWs || this.gatewayWs.readyState !== 1) return;
+    const id = makeReqId();
+    const frame = {
+      type: 'req',
+      id,
+      method: 'connect.challenge',
+      params: {
+        nonce: String(challenge?.nonce || '').trim(),
+        timestamp: Date.now(),
+        response: {
+          mode: 'service',
+          clientId: defaultBridgeClientId(),
+          platform: defaultBridgeClientPlatform(),
+          tokenPresent: Boolean(this.gatewayToken),
+        },
+      },
+    };
+    this._pending.set(id, (msg) => {
+      if (msg && msg.ok === true) {
+        if (!this._isScopeGrantedOnConnect(msg)) {
+          gatewayBridgeErrorsTotal.inc();
+          this._recordReject('connect', { code: 'SCOPE_DENIED', message: 'operator.write not granted' });
+          try {
+            this.gatewayWs?.close();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        this._gatewayConnected = true;
+        gatewayBridgeGateState.labels('pairing').set(1);
+        gatewayBridgeGateState.labels('scope').set(1);
+        logger.info('single_client_gateway_connected_after_challenge', { id });
+        this._drainQueue();
+      } else {
+        gatewayBridgeErrorsTotal.inc();
+        this._recordReject('connect_challenge', msg?.error ?? msg);
+        logger.error('single_client_gateway_connect_challenge_rejected', {
+          id,
+          error: msg?.error,
+        });
+        try {
+          this.gatewayWs?.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+    this.gatewayWs.send(JSON.stringify(frame));
+  }
+
+  async _tryFallback(text, reason) {
+    if (!this._fallbackClient || !this._fallbackClient.isConfigured()) return false;
+    try {
+      const out = await this._fallbackClient.completeUserTurn(text);
+      if (!out) return false;
+      gatewayBridgeFallbackTotal.labels('provider', reason || 'unknown').inc();
+      gatewayBridgeGateState.labels('provider').set(1);
+      this.onAssistantText(out);
+      return true;
+    } catch (err) {
+      const c = classifyGatewayError(err?.message || String(err));
+      if (c.category === 'provider') gatewayBridgeGateState.labels('provider').set(0);
+      gatewayBridgeErrorsTotal.inc();
+      logger.error('single_client_gateway_fallback_failed', {
+        err: err?.message || String(err),
+        reason,
+      });
+      return false;
+    }
+  }
+
   _connect() {
     if (this._destroyed || this._connecting || this.gatewayWs) return;
     this._connecting = true;
@@ -205,6 +330,7 @@ export class GatewayAgentClient {
     });
 
     this.gatewayWs.on('error', (err) => {
+      gatewayBridgeErrorsTotal.inc();
       logger.error('single_client_gateway_ws_error', { err: err.message });
       try {
         this.onError(err);
@@ -244,11 +370,33 @@ export class GatewayAgentClient {
       params,
     };
     this._pending.set(id, (msg) => {
+      const challenge = this._extractConnectChallenge(msg);
+      if (challenge) {
+        this._sendConnectChallengeResponse(challenge);
+        return;
+      }
       if (msg && msg.ok === true) {
+        if (!this._isScopeGrantedOnConnect(msg)) {
+          gatewayBridgeErrorsTotal.inc();
+          this._recordReject('connect', {
+            code: 'SCOPE_DENIED',
+            message: 'operator.write not granted',
+          });
+          try {
+            this.gatewayWs?.close();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
         this._gatewayConnected = true;
+        gatewayBridgeGateState.labels('pairing').set(1);
+        gatewayBridgeGateState.labels('scope').set(1);
         logger.info('single_client_gateway_connected', { id });
         this._drainQueue();
       } else {
+        gatewayBridgeErrorsTotal.inc();
+        this._recordReject('connect', msg?.error ?? msg);
         logger.error('single_client_gateway_connect_rejected', { id, error: msg?.error });
         try {
           this.onError(new Error(`gateway_connect_rejected:${JSON.stringify(msg?.error ?? msg)}`));
@@ -297,14 +445,23 @@ export class GatewayAgentClient {
   }
 
   async _drainQueue() {
-    if (this._inFlight || !this._gatewayConnected || !this.gatewayWs || this.gatewayWs.readyState !== 1) {
+    if (this._inFlight) {
+      return;
+    }
+    const canSendGateway =
+      this._gatewayConnected && this.gatewayWs && this.gatewayWs.readyState === 1;
+    if (!canSendGateway && !this._autoFallbackEnabled) {
       return;
     }
     const item = this._queue.shift();
     if (!item) return;
     this._inFlight = true;
     try {
-      await this._sendAgentTurn(item.text, item.agentId);
+      if (canSendGateway) {
+        await this._sendAgentTurn(item.text, item.agentId);
+      } else if (this._autoFallbackEnabled) {
+        await this._tryFallback(item.text, this._degradedReason || 'gateway_not_connected');
+      }
     } finally {
       this._inFlight = false;
       if (this._queue.length > 0) this._drainQueue();
@@ -344,24 +501,40 @@ export class GatewayAgentClient {
 
       this._pending.set(id, (resMsg) => {
         clearTimeout(timeout);
-        const t = extractAssistantTextFromGateway(resMsg);
-        if (t) {
-          this.onAssistantText(t);
-        } else {
-          logger.warn('single_client_gateway_res_no_text', {
-            id,
-            ok: resMsg?.ok,
-            type: resMsg?.type,
-            snippet: (() => {
-              try {
-                return JSON.stringify(resMsg).slice(0, 400);
-              } catch {
-                return '';
-              }
-            })(),
-          });
-        }
-        resolve();
+        const handle = async () => {
+          if (resMsg && resMsg.ok === false) {
+            const c = this._recordReject('agent', resMsg?.error ?? resMsg);
+            const usedFallback = await this._tryFallback(
+              userText,
+              `agent_${c.reason}`
+            );
+            if (usedFallback) {
+              resolve();
+              return;
+            }
+          } else {
+            gatewayBridgeGateState.labels('provider').set(1);
+          }
+          const t = extractAssistantTextFromGateway(resMsg);
+          if (t) {
+            this.onAssistantText(t);
+          } else {
+            logger.warn('single_client_gateway_res_no_text', {
+              id,
+              ok: resMsg?.ok,
+              type: resMsg?.type,
+              snippet: (() => {
+                try {
+                  return JSON.stringify(resMsg).slice(0, 400);
+                } catch {
+                  return '';
+                }
+              })(),
+            });
+          }
+          resolve();
+        };
+        handle();
       });
 
       try {

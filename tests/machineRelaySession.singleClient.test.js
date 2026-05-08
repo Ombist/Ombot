@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { MachineRelaySession } from '../machineRelaySession.js';
-import { generateKeyPairFromSeed, hexToBytes } from '../ed25519.js';
+import { generateKeyPairFromSeed, hexToBytes, sign } from '../ed25519.js';
 import { boxKeyPair, decrypt, encrypt, publicKeyToBase64 } from '../boxCrypto.js';
+import {
+  registerChallengeClientDataHashBase64,
+  registerChallengeSigningPayload,
+} from '../securityGuards.js';
 function baseConfig(overrides = {}) {
   return {
     MIDDLEWARE_WS_URL: 'wss://127.0.0.1:9/ws',
@@ -40,7 +44,47 @@ describe('MachineRelaySession single-client mode', () => {
     vi.unstubAllEnvs();
   });
 
-  it('completeSingleClientRegister sends peer_public_key', () => {
+  function completeStrictRegister(session, sent) {
+    const challenge = sent.find((x) => x.type === 'challenge');
+    expect(challenge).toBeTruthy();
+    const timestamp = challenge.issuedAt + 1;
+    const body = `${registerChallengeSigningPayload({
+      nonce: challenge.nonce,
+      issuedAt: challenge.issuedAt,
+      expiresAt: challenge.expiresAt,
+      traceId: challenge.traceId,
+      participantId: challenge.participantId,
+      conversationId: challenge.conversationId,
+      publicKey: challenge.publicKey,
+      protocolVersion: challenge.protocolVersion,
+    })}|${timestamp}`;
+    const sigHex = sign(hexToBytes(clientSk), body);
+    const res = session.handleRegisterChallengeResponse({
+      type: 'register_challenge_response',
+      nonce: challenge.nonce,
+      timestamp,
+      signature: sigHex,
+      attestation: {
+        provider: 'apple_app_attest',
+        keyId: 'k1',
+        assertion: 'a1',
+        clientDataHash: registerChallengeClientDataHashBase64({
+          nonce: challenge.nonce,
+          issuedAt: challenge.issuedAt,
+          expiresAt: challenge.expiresAt,
+          traceId: challenge.traceId,
+          participantId: challenge.participantId,
+          conversationId: challenge.conversationId,
+          publicKey: challenge.publicKey,
+          protocolVersion: challenge.protocolVersion,
+        }),
+        verdict: 'ok',
+      },
+    });
+    expect(res.ok).toBe(true);
+  }
+
+  it('strict register challenge then peer_public_key', () => {
     const sent = [];
     const clientWs = {
       readyState: 1,
@@ -55,7 +99,7 @@ describe('MachineRelaySession single-client mode', () => {
       bridgeMode: false,
       config: baseConfig(),
     });
-    session.validateAndPrepareRegister({
+    const registerPayload = {
       type: 'register_public_key',
       publicKey: clientPk,
       boxPublicKey: publicKeyToBase64(clientBox.publicKey),
@@ -64,18 +108,12 @@ describe('MachineRelaySession single-client mode', () => {
       traceId: 'tr',
       protocolVersion: 2,
       capabilities: ['signature', 'replay_guard'],
-    });
-    session.completeRegisterAndConnectMiddleware({
-      type: 'register_public_key',
-      publicKey: clientPk,
-      boxPublicKey: publicKeyToBase64(clientBox.publicKey),
-      conversationId: 'c1',
-      participantId: 'p1',
       agentId: 'agent-a',
-      traceId: 'tr',
-      protocolVersion: 2,
-      capabilities: ['signature', 'replay_guard'],
-    });
+    };
+    const prep = session.validateAndPrepareRegister(registerPayload);
+    expect(prep.ok).toBe(false);
+    session.notifyClientJson(prep.response);
+    completeStrictRegister(session, sent);
     expect(sent.some((x) => x.type === 'registered')).toBe(true);
     const peer = sent.find((x) => x.type === 'peer_public_key');
     expect(peer?.publicKey).toBeTruthy();
@@ -164,6 +202,7 @@ describe('MachineRelaySession single-client mode', () => {
       peerPublicKeys: {},
     };
     session.singleClientAgentId = 'default';
+    session._handshakeState = 'ready_for_agent_req';
 
     const reqJson = {
       type: 'req',

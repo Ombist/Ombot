@@ -36,6 +36,8 @@ On failure: `ok: false` and `errors: [{ "code": "NO_SUDO", "message": "..." }]`.
 | `ombot-admin systemctl monitor --json` | Two services: for each role, prefers **`ombist-ombot.service` / `ombist-openclaw-gateway.service`** when the matching file exists under **`/etc/systemd/system/`** (Ombist_IOS provision layout), else if `systemctl cat <unit>` succeeds, else falls back to **`ombot.service` / `openclaw-gateway@Ombist_IOS.service`** (manual/README install). `--no-pager` on `systemctl` calls. Same JSON shape as before. |
 | `ombot-admin ombrouter install [--pinned-ref <sha>] --json` | Clone/build OmbRouter and `openclaw plugins install` |
 | `ombot-admin ombot health-port ensure-internal --json` | Restrict Ombot `HEALTH_PORT` to localhost + tailnet |
+| `ombot-admin gateway health-gates --json` | Evaluate Pairing / Scope / Provider gates from recent Ombot + Gateway logs (default window `10 min ago`) |
+| `ombot-admin gateway config-drift --json` | Compare `OPENCLAW_GATEWAY_TOKEN` and `OPENCLAW_BRIDGE_OPERATOR_SCOPES` across env/runtime/systemd sources and report drift |
 
 ### TLS version fingerprint (`rootCaSha256Hex`)
 
@@ -48,5 +50,13 @@ On failure: `ok: false` and `errors: [{ "code": "NO_SUDO", "message": "..." }]`.
 Ombist_IOS calls the above via SSH + a small bash stub (`OmbotAdminCli`). If `ombot-admin` is missing, the app shows an error asking the operator to run **single-bot full reprovision** once so the tool is installed from the Ombot git checkout.
 
 After changing `systemctl monitor` behavior, machines must run an **`ombot-admin` copy that includes the update** (redeploy from a current Ombot checkout, or copy updated files under `/opt/ombot/bin/ombot-admin-lib/`) so **「檢查遠端服務」** reports `ombist-*` units instead of legacy names on iOS-provisioned hosts.
+
+## Gateway stability workflow
+
+When `NOT_PAIRED`, `missing scope: operator.write`, and provider 401 appear in mixed waves, run:
+
+1. `ombot-admin gateway health-gates --json` to detect which gate is currently failing.
+2. `ombot-admin gateway config-drift --json` to catch token/scope drift among `/etc/ombot/ombot.env`, runtime `openclaw.json`, and `systemctl` env.
+3. `tools/gateway-stability-runbook.sh fallback-on` to print reversible fallback env commands (provider direct fallback while gateway write path is degraded).
 
 First-time single-bot provision still emits the legacy `PROVISION_SUMMARY_*` / `ROOTCA_PEM_B64_*` markers for the bundled `provision-single-bot.sh` path.

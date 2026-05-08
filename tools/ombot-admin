@@ -30,6 +30,8 @@ die() {
 . "${LIB}/health-port.sh"
 # shellcheck source=/dev/null
 . "${LIB}/openclaw-config.sh"
+# shellcheck source=/dev/null
+. "${LIB}/gateway-stability.sh"
 
 usage() {
   cat <<'EOF'
@@ -42,6 +44,8 @@ Usage:
   ombot-admin ombrouter install [--pinned-ref <sha>] [--json]
   ombot-admin ombot health-port ensure-internal [--json]
   ombot-admin openclaw config ensure-local [--json]
+  ombot-admin gateway health-gates [--json]
+  ombot-admin gateway config-drift [--json]
 EOF
 }
 
@@ -209,6 +213,14 @@ main() {
     openclaw)
       [[ "${args[1]:-}" == "config" && "${args[2]:-}" == "ensure-local" ]] || die "openclaw only supports config ensure-local"
       ombist_cmd_openclaw_config_ensure_local_main
+      ;;
+    gateway)
+      [[ ${#args[@]} -ge 2 ]] || die "gateway needs subcommand"
+      case "${args[1]}" in
+        health-gates) ombist_cmd_gateway_health_gates_main ;;
+        config-drift) ombist_cmd_gateway_config_drift_main ;;
+        *) die "gateway supports: health-gates | config-drift" ;;
+      esac
       ;;
     *)
       die "unknown command: ${args[0]}"

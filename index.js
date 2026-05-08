@@ -182,7 +182,21 @@ wss.on('connection', (clientWs, req) => {
         session.notifyClientJson(prep.response);
         return;
       }
-      session.completeRegisterAndConnectMiddleware(json);
+      return;
+    }
+
+    if (json.type === 'register_challenge_response') {
+      const verify = session.handleRegisterChallengeResponse(json);
+      if (!verify.ok) {
+        session.notifyClientJson(verify.response);
+        if (String(process.env.OPENCLAW_STRICT_PAIRING_PROFILE || '1') !== '0') {
+          try {
+            clientWs.close(1008, 'challenge_failed');
+          } catch {
+            /* ignore */
+          }
+        }
+      }
       return;
     }
 
@@ -190,12 +204,29 @@ wss.on('connection', (clientWs, req) => {
       const dec = session.tryDecryptClientBox(raw, json);
       if (dec && dec.json.type === 'req') {
         session.relaySignedReqToMiddleware(dec.raw, dec.json);
+      } else if (String(process.env.OPENCLAW_STRICT_PAIRING_PROFILE || '1') !== '0') {
+        session.notifyClientJson({ type: 'error', message: 'encrypted_frame_invalid' });
+        try {
+          clientWs.close(1008, 'encrypted_frame_invalid');
+        } catch {
+          /* ignore */
+        }
       }
       return;
     }
 
     if (json.type === 'req') {
       session.relaySignedReqToMiddleware(raw, json);
+      return;
+    }
+
+    session.notifyClientJson({ type: 'error', message: 'unsupported_message_type' });
+    if (String(process.env.OPENCLAW_STRICT_PAIRING_PROFILE || '1') !== '0') {
+      try {
+        clientWs.close(1008, 'unsupported_message_type');
+      } catch {
+        /* ignore */
+      }
     }
   });
 

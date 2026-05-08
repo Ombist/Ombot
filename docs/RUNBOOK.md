@@ -21,6 +21,26 @@
 4. If impact persists, rollback with `tools/rollback.sh`.
 5. Record timeline, root cause, and permanent fix items.
 
+## Gateway Gate SLI/SLO
+
+- Gate SLIs (10-minute window, source: Ombot/Gateway logs):
+  - Pairing gate: `NOT_PAIRED` / `DEVICE_IDENTITY_REQUIRED` hit count
+  - Scope gate: `missing scope` / `operator.write` hit count
+  - Provider gate: `No API key found` / `invalid api key` / `401` hit count
+- Default alert thresholds:
+  - Pairing gate > 1 => critical
+  - Scope gate > 0 => critical
+  - Provider gate > 0 => critical
+- Targets:
+  - `NOT_PAIRED` daily count <= 1
+  - scope/provider rejects do not block conversation path longer than 10 minutes
+
+### Commands
+
+- `ombot-admin gateway health-gates --json`
+- `ombot-admin gateway config-drift --json`
+- `tools/gateway-stability-runbook.sh diagnose`
+
 ## Signature/Replay Alerts
 
 - Default alert thresholds (5 min window):
@@ -94,6 +114,19 @@ Use this checklist after changing ingress or Ombot env. Ombers must present **TL
 
 3. **Negative test (must fail fast)**
    - Set **`MIDDLEWARE_WS_URL=ws://…`** while **`OPENCLAW_REQUIRE_MIDDLEWARE_TLS`** is **not** `0`. Ombot should **exit on startup** with `middleware_tls_required`. This confirms misconfiguration cannot silently downgrade to plaintext middleware.
+
+## Degraded Fallback Path (Gateway write blocked)
+
+Use when Gateway write path is rejected by scope or pairing policies but service must stay conversational:
+
+1. Enable fallback config printout:
+   - `tools/gateway-stability-runbook.sh fallback-on`
+2. Apply the printed `systemd` drop-in and restart `ombist-ombot.service`.
+3. Verify:
+   - `ombot_gateway_bridge_fallback_total` increases on traffic.
+   - `ombot_gateway_bridge_reject_total{category="scope"}` can stay non-zero without user-visible outage.
+4. Roll back to primary:
+   - `tools/gateway-stability-runbook.sh fallback-off`
 
 ## mTLS client identity (Ombot to Ombers Nginx)
 

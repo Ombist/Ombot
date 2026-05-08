@@ -4,9 +4,14 @@ import { MachineRelaySession } from './machineRelaySession.js';
 import {
   gatewayBridgeConnectState,
   gatewayBridgeErrorsTotal,
+  gatewayBridgeFallbackTotal,
+  gatewayBridgeGateState,
   gatewayBridgePhoneToGatewayTotal,
+  gatewayBridgeRejectTotal,
   gatewayBridgeGatewayToPhoneTotal,
 } from './metrics.js';
+import { classifyGatewayError } from './gatewayErrorClassifier.js';
+import { ProviderFallbackClient } from './providerFallbackClient.js';
 
 function makeReqId() {
   return `ombot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -174,6 +179,161 @@ export class OpenClawGatewayBridge {
     this._pending = new Map();
     this._inFlight = false;
     this._queue = [];
+    this._gateStatus = {
+      pairing: 'unknown',
+      scope: 'unknown',
+      provider: 'unknown',
+    };
+    this._strictPairingProfile = process.env.OPENCLAW_STRICT_PAIRING_PROFILE !== '0';
+    this._autoFallbackEnabled = ['1', 'true', 'yes'].includes(
+      String(process.env.OPENCLAW_BRIDGE_AUTO_FALLBACK || '')
+        .trim()
+        .toLowerCase()
+    ) && !this._strictPairingProfile;
+    this._fallbackClient = this._autoFallbackEnabled ? new ProviderFallbackClient() : null;
+    this._degradedReason = '';
+    this._initGateStatus();
+  }
+
+  _extractConnectChallenge(msg) {
+    const fromPayload = msg?.payload?.challenge;
+    if (fromPayload && typeof fromPayload === 'object' && String(fromPayload.nonce || '').trim()) {
+      return fromPayload;
+    }
+    const fromError = msg?.error?.details?.challenge;
+    if (fromError && typeof fromError === 'object' && String(fromError.nonce || '').trim()) {
+      return fromError;
+    }
+    return null;
+  }
+
+  _isScopeGrantedOnConnect(msg) {
+    const granted = Array.isArray(msg?.payload?.grantedScopes) ? msg.payload.grantedScopes : [];
+    if (granted.length === 0) return true;
+    const normalized = granted
+      .filter((x) => typeof x === 'string')
+      .map((x) => x.trim().toLowerCase());
+    return normalized.includes('operator.write');
+  }
+
+  _sendConnectChallengeResponse(challenge) {
+    if (!this.gatewayWs || this.gatewayWs.readyState !== 1) return;
+    const id = makeReqId();
+    const nonce = String(challenge?.nonce || '').trim();
+    const frame = {
+      type: 'req',
+      id,
+      method: 'connect.challenge',
+      params: {
+        nonce,
+        timestamp: Date.now(),
+        response: {
+          mode: 'service',
+          clientId: defaultBridgeClientId(),
+          platform: defaultBridgeClientPlatform(),
+          tokenPresent: Boolean(this.gatewayToken),
+        },
+      },
+    };
+    this._pending.set(id, (msg) => {
+      if (msg && msg.ok === true) {
+        if (!this._isScopeGrantedOnConnect(msg)) {
+          this._recordGatewayReject('connect', { code: 'SCOPE_DENIED', message: 'operator.write not granted' });
+          this._setGate('scope', 'fail', 'scope_denied');
+          try {
+            this.gatewayWs?.close();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        this._gatewayConnected = true;
+        gatewayBridgeConnectState.set(1);
+        this._setGate('pairing', 'pass', 'challenge_ok');
+        this._setGate('scope', 'pass', 'challenge_ok');
+        logger.info('gateway_bridge_connected_after_challenge', { id, nonce });
+        this._drainQueue();
+      } else {
+        gatewayBridgeErrorsTotal.inc();
+        this._recordGatewayReject('connect_challenge', msg?.error ?? msg);
+        logger.error('gateway_bridge_connect_challenge_rejected', { id, nonce, error: msg?.error });
+        try {
+          this.gatewayWs?.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+    this.gatewayWs.send(JSON.stringify(frame));
+  }
+
+  _initGateStatus() {
+    this._setGate('pairing', 'unknown', 'startup');
+    const scopes = defaultGatewayBridgeScopes();
+    const hasRequiredScope = scopes.includes('operator.read') && scopes.includes('operator.write');
+    this._setGate(
+      'scope',
+      hasRequiredScope ? 'pass' : 'fail',
+      hasRequiredScope ? 'static' : 'missing_scope'
+    );
+    const hasProviderEnv = Boolean(
+      String(process.env.OPENAI_API_KEY || '').trim() ||
+        String(process.env.ANTHROPIC_API_KEY || '').trim() ||
+        String(process.env.GOOGLE_API_KEY || '').trim()
+    );
+    this._setGate(
+      'provider',
+      hasProviderEnv ? 'pass' : 'unknown',
+      hasProviderEnv ? 'env_present' : 'env_missing'
+    );
+  }
+
+  _gateValue(status) {
+    if (status === 'pass') return 1;
+    if (status === 'fail') return 0;
+    return -1;
+  }
+
+  _setGate(gate, status, detail) {
+    const prev = this._gateStatus[gate];
+    this._gateStatus[gate] = status;
+    gatewayBridgeGateState.labels(gate).set(this._gateValue(status));
+    if (prev !== status) {
+      logger.info('gateway_bridge_gate_changed', { gate, status, detail });
+    }
+  }
+
+  _recordGatewayReject(phase, errorLike) {
+    const classified = classifyGatewayError(errorLike);
+    gatewayBridgeRejectTotal.labels(phase, classified.category, classified.reason).inc();
+    if (classified.category === 'pairing') this._setGate('pairing', 'fail', classified.reason);
+    if (classified.category === 'scope') this._setGate('scope', 'fail', classified.reason);
+    if (classified.category === 'provider') this._setGate('provider', 'fail', classified.reason);
+    this._degradedReason = `${phase}:${classified.reason}`;
+    return classified;
+  }
+
+  async _tryFallback(userText, reason) {
+    if (!this._fallbackClient || !this._fallbackClient.isConfigured()) return false;
+    try {
+      const text = await this._fallbackClient.completeUserTurn(userText);
+      if (text && this.session) {
+        gatewayBridgeFallbackTotal.labels('provider', reason || 'unknown').inc();
+        gatewayBridgeGatewayToPhoneTotal.inc();
+        this.session.sendPlaintextToPhone(assistantTextToPhoneRes(text));
+        this._setGate('provider', 'pass', 'fallback_ok');
+        return true;
+      }
+    } catch (err) {
+      const classified = classifyGatewayError(err?.message || String(err));
+      if (classified.category === 'provider') this._setGate('provider', 'fail', classified.reason);
+      gatewayBridgeErrorsTotal.inc();
+      logger.error('gateway_bridge_fallback_failed', {
+        err: err?.message || String(err),
+        reason,
+      });
+    }
+    return false;
   }
 
   start() {
@@ -291,13 +451,35 @@ export class OpenClawGatewayBridge {
       params,
     };
     this._pending.set(id, (msg) => {
+      const challenge = this._extractConnectChallenge(msg);
+      if (challenge) {
+        this._sendConnectChallengeResponse(challenge);
+        return;
+      }
       if (msg && msg.ok === true) {
+        if (!this._isScopeGrantedOnConnect(msg)) {
+          gatewayBridgeErrorsTotal.inc();
+          this._recordGatewayReject('connect', {
+            code: 'SCOPE_DENIED',
+            message: 'operator.write not granted',
+          });
+          this._setGate('scope', 'fail', 'scope_denied');
+          try {
+            this.gatewayWs?.close();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
         this._gatewayConnected = true;
         gatewayBridgeConnectState.set(1);
+        this._setGate('pairing', 'pass', 'connect_ok');
+        this._setGate('scope', 'pass', 'connect_ok');
         logger.info('gateway_bridge_connected', { id });
         this._drainQueue();
       } else {
         gatewayBridgeErrorsTotal.inc();
+        this._recordGatewayReject('connect', msg?.error ?? msg);
         logger.error('gateway_bridge_connect_rejected', {
           id,
           error: msg?.error,
@@ -373,14 +555,31 @@ export class OpenClawGatewayBridge {
   }
 
   async _drainQueue() {
-    if (this._inFlight || !this._gatewayConnected || !this.gatewayWs || this.gatewayWs.readyState !== 1) {
+    if (this._inFlight) {
+      return;
+    }
+    const canSendGateway =
+      this._gatewayConnected && this.gatewayWs && this.gatewayWs.readyState === 1;
+    if (!canSendGateway && !this._autoFallbackEnabled) {
       return;
     }
     const text = this._queue.shift();
     if (text == null) return;
     this._inFlight = true;
     try {
-      await this._sendAgentTurn(text);
+      if (canSendGateway) {
+        await this._sendAgentTurn(text);
+      } else if (this._autoFallbackEnabled) {
+        const usedFallback = await this._tryFallback(
+          text,
+          this._degradedReason || 'gateway_not_connected'
+        );
+        if (!usedFallback) {
+          logger.warn('gateway_bridge_no_path_available', {
+            reason: this._degradedReason || 'gateway_not_connected',
+          });
+        }
+      }
     } finally {
       this._inFlight = false;
       if (this._queue.length > 0) this._drainQueue();
@@ -420,12 +619,25 @@ export class OpenClawGatewayBridge {
 
       this._pending.set(id, (resMsg) => {
         clearTimeout(timeout);
-        const t = extractAssistantTextFromGateway(resMsg);
-        if (t && this.session) {
-          gatewayBridgeGatewayToPhoneTotal.inc();
-          this.session.sendPlaintextToPhone(assistantTextToPhoneRes(t));
-        }
-        resolve();
+        const handle = async () => {
+          if (resMsg && resMsg.ok === false) {
+            const classified = this._recordGatewayReject('agent', resMsg?.error ?? resMsg);
+            const usedFallback = await this._tryFallback(userText, `agent_${classified.reason}`);
+            if (usedFallback) {
+              resolve();
+              return;
+            }
+          } else {
+            this._setGate('provider', 'pass', 'agent_ok');
+          }
+          const t = extractAssistantTextFromGateway(resMsg);
+          if (t && this.session) {
+            gatewayBridgeGatewayToPhoneTotal.inc();
+            this.session.sendPlaintextToPhone(assistantTextToPhoneRes(t));
+          }
+          resolve();
+        };
+        handle();
       });
 
       try {

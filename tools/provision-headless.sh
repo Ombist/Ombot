@@ -297,6 +297,7 @@ openclaw config set gateway.auth.token '${OPENCLAW_GATEWAY_TOKEN}'" || {
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
   echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
   echo "OPENCLAW_REQUIRE_MIDDLEWARE_TLS=${OPENCLAW_REQUIRE_MIDDLEWARE_TLS}"
+  echo 'OPENCLAW_BRIDGE_OPERATOR_SCOPES=["operator.read","operator.write","operator.admin"]'
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
   fi

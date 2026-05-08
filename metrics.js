@@ -75,6 +75,27 @@ export const gatewayBridgeGatewayToPhoneTotal = new client.Counter({
   registers: [register],
 });
 
+export const gatewayBridgeRejectTotal = new client.Counter({
+  name: 'ombot_gateway_bridge_reject_total',
+  help: 'Gateway rejections by phase/category/reason',
+  labelNames: ['phase', 'category', 'reason'],
+  registers: [register],
+});
+
+export const gatewayBridgeGateState = new client.Gauge({
+  name: 'ombot_gateway_bridge_gate_state',
+  help: 'Gateway health gate state (1 pass, 0 fail, -1 unknown)',
+  labelNames: ['gate'],
+  registers: [register],
+});
+
+export const gatewayBridgeFallbackTotal = new client.Counter({
+  name: 'ombot_gateway_bridge_fallback_total',
+  help: 'Fallback turns sent when gateway path degraded',
+  labelNames: ['source', 'reason'],
+  registers: [register],
+});
+
 export async function metricsText() {
   return register.metrics();
 }

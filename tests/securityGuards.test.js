@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { generateKeyPairFromSeed, sign } from '../ed25519.js';
-import { reqSigningPayloadSha256Hex, reqSigningPayloadStable, validateReqSignature } from '../securityGuards.js';
+import {
+  registerChallengeClientDataHashBase64,
+  registerChallengeSigningPayload,
+  reqSigningPayloadSha256Hex,
+  reqSigningPayloadStable,
+  validateRegisterChallengeResponse,
+  validateReqSignature,
+} from '../securityGuards.js';
 
 /** Mirror pre-canonical server stringification (used to simulate older iOS clients). */
 function legacySigningString(req) {
@@ -148,5 +155,42 @@ describe('security guards', () => {
     expect(reqSigningPayloadStable(req)).toBe(
       '{"id":"req-1","method":"agent","nonce":"abc","params":{"clientMessageId":"msg-0","message":"HI"},"timestamp":1700000000000,"type":"req"}'
     );
+  });
+
+  it('validates strict register challenge response with attestation fields', () => {
+    const kp = generateKeyPairFromSeed('reg-ch-seed');
+    const now = Date.now();
+    const challenge = {
+      nonce: 'reg-nonce',
+      issuedAt: now - 1000,
+      expiresAt: now + 30_000,
+      traceId: 'tr-1',
+      participantId: 'ios-a',
+      conversationId: 'conv-a',
+      publicKey: kp.publicKeyHex,
+      protocolVersion: 2,
+    };
+    const ts = now;
+    const signingBody = `${registerChallengeSigningPayload(challenge)}|${ts}`;
+    const response = {
+      nonce: challenge.nonce,
+      timestamp: ts,
+      signature: sign(kp.secretKey, signingBody),
+      attestation: {
+        provider: 'apple_app_attest',
+        keyId: 'kid-1',
+        assertion: 'assertion-b64',
+        clientDataHash: registerChallengeClientDataHashBase64(challenge),
+        verdict: 'ok',
+      },
+    };
+    const ok = validateRegisterChallengeResponse({
+      responseJson: response,
+      challenge,
+      verifyPublicKey: kp.publicKey,
+      requireAttestation: true,
+      nowMs: now,
+    });
+    expect(ok.ok).toBe(true);
   });
 });

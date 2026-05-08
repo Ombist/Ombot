@@ -168,7 +168,7 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_REQUIRE_MIDDLEWARE_T
 
 行為摘要：Ombot 以 bridge 模式連上 Middleware；Phone 完成 box 握手後，解密得到的 `type: "req"` / `method: "agent"` / `params.message` 會轉成 Gateway 的 `req`（預設 `method` 為 `agent`，可由 `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` 覆寫）；每輪會帶 **`idempotencyKey`**、**`agentId`**（固定為 **`OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID`**；未設時等同 **`OPENCLAW_BRIDGE_AGENT_ID`**，預設 `default`）與 **`scopes`**（為相容部分 Gateway 版本，`agent` 請求也會附帶 scopes，不只 `connect`）。`connect` 會送 **`scopes`**，可經 `OPENCLAW_BRIDGE_OPERATOR_SCOPES` 覆寫為 JSON 陣列。預先於 `openclaw.json` 的 **`agents.list`** 為各 `agentId` 設定 model，無需在請求內覆寫 `provider`/`model`。Gateway 回傳的 `res` / `event` 會盡力抽出文字再以 `type: "res"` 加密回 Phone。**OpenClaw Gateway 協定版本差異**時請對照官方文件並鎖定 `openclaw` 版本；`connect.challenge` / device pairing 等進階流程可能需後續擴充。
 
-Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_total`、`ombot_gateway_bridge_phone_to_gateway_total`、`ombot_gateway_bridge_gateway_to_phone_total`。
+Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_total`、`ombot_gateway_bridge_phone_to_gateway_total`、`ombot_gateway_bridge_gateway_to_phone_total`、`ombot_gateway_bridge_reject_total{phase,category,reason}`、`ombot_gateway_bridge_gate_state{gate}`、`ombot_gateway_bridge_fallback_total{source,reason}`。
 
 ## Health and Metrics
 
@@ -199,6 +199,10 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_MIN_PROTOCOL_VERSION` | `2` | Minimum supported client protocol version |
 | `OPENCLAW_ALLOW_LEGACY_PROTOCOL` | `0` | Whether clients below server protocol are allowed |
 | `OPENCLAW_REQUIRED_CAPABILITIES` | `signature,replay_guard` | Comma-separated client capabilities required at register time |
+| `OPENCLAW_STRICT_PAIRING_PROFILE` | `1` | Fail-close pairing profile; unsupported message/challenge paths are rejected |
+| `OPENCLAW_REQUIRE_DEVICE_ATTESTATION` | `1` | Require `register_challenge_response.attestation` fields to pass registration |
+| `OPENCLAW_REGISTER_CHALLENGE_TTL_MS` | `60000` | Registration challenge validity window |
+| `OPENCLAW_ALLOW_UNVERIFIED_ATTESTATION` | `0` | Debug-only escape hatch: allow attestation without `verdict=ok` |
 | `OPENCLAW_GATEWAY_BRIDGE` | (unset / off) | Set `1` or `true` to enable in-process OpenClaw Gateway WebSocket client bridge |
 | `OPENCLAW_GATEWAY_URL` | `ws://127.0.0.1:18789` | Gateway WebSocket URL for the bridge |
 | `OPENCLAW_GATEWAY_TOKEN` | auto-generated at provision if unset | Sent as `connect.params.auth.token`; provision also sets `gateway.auth.mode=token` |
@@ -213,6 +217,9 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_BRIDGE_CLIENT_PLATFORM` | auto (`linux`/`darwin`/`windows`) | `connect.params.client.platform` |
 | `OPENCLAW_BRIDGE_CLIENT_MODE` | `service` | `connect.params.client.mode` |
 | `OPENCLAW_BRIDGE_OPERATOR_SCOPES` | (empty → `["operator.read","operator.write"]`) | JSON array of operator scopes on `connect`；`operater.*` 會自動正規化為 `operator.*`。無論此變數如何設定，程式都會強制補齊 `operator.read`、`operator.write` 以避免 `missing scope` 類型錯誤。另相容 systemd `EnvironmentFile` 常見格式：`[operator.read,operator.write]`（無引號） |
+| `OPENCLAW_BRIDGE_AUTO_FALLBACK` | `0` | Set `1` to enable provider-direct fallback when gateway path is rejected/unavailable (ignored when strict pairing profile is enabled) |
+| `OPENCLAW_FALLBACK_OPENAI_MODEL` | `gpt-4.1-mini` | Model for fallback provider route (`OPENAI_API_KEY` required) |
+| `OPENCLAW_FALLBACK_TIMEOUT_MS` | `45000` | Timeout for fallback provider completion call |
 | `OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID` | same as `OPENCLAW_BRIDGE_AGENT_ID` | Gateway `agent` params `agentId` on each turn |
 | `OPENCLAW_BRIDGE_REQ_TIMEOUT_MS` | `120000` | Per-turn timeout waiting for Gateway `res` |
 

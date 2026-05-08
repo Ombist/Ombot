@@ -15,7 +15,12 @@ import {
   signatureVerifyFailTotal,
 } from './metrics.js';
 import { computeSessionKey, middlewareWsUrlForSession } from './sessionKey.js';
-import { reqSigningPayloadSha256Hex, validateReqSignature } from './securityGuards.js';
+import {
+  registerChallengeSigningPayload,
+  reqSigningPayloadSha256Hex,
+  validateRegisterChallengeResponse,
+  validateReqSignature,
+} from './securityGuards.js';
 
 function assistantTextToPhoneRes(text) {
   return JSON.stringify({
@@ -78,6 +83,11 @@ export class MachineRelaySession {
     this._gatewayClient = null;
     /** @type {string | null} */
     this.singleClientAgentId = null;
+    this._handshakeState = 'unregistered';
+    this._pendingRegister = null;
+    this._registerChallenge = null;
+    this._requireDeviceAttestation = process.env.OPENCLAW_REQUIRE_DEVICE_ATTESTATION !== '0';
+    this._strictPairingProfile = process.env.OPENCLAW_STRICT_PAIRING_PROFILE !== '0';
   }
 
   destroy() {
@@ -110,6 +120,32 @@ export class MachineRelaySession {
     if (this.clientWs?.readyState === 1) {
       this.clientWs.send(JSON.stringify(obj));
     }
+  }
+
+  failClose(reason, closeCode = 1008) {
+    writeAuditEvent('pairing_fail_close', {
+      clientId: this.clientId,
+      reason,
+      traceId: this.traceId,
+      participantId: this.participantId,
+      state: this._handshakeState,
+    });
+    logger.warn('pairing_fail_close', {
+      clientId: this.clientId,
+      reason,
+      traceId: this.traceId,
+      participantId: this.participantId,
+      state: this._handshakeState,
+    });
+    this.notifyClientJson({ type: 'error', message: reason, traceId: this.traceId });
+    if (!this.bridgeMode && this.clientWs && this.clientWs.readyState === 1) {
+      try {
+        this.clientWs.close(closeCode, reason);
+      } catch {
+        /* ignore */
+      }
+    }
+    this._handshakeState = 'rejected';
   }
 
   deliverPlaintextToConsumer(plain) {
@@ -154,6 +190,7 @@ export class MachineRelaySession {
       protocolVersion: this.config.SERVER_PROTOCOL_VERSION,
       capabilities: this.config.REQUIRED_CAPABILITIES,
     });
+    this._handshakeState = 'ready_for_agent_req';
     writeAuditEvent('client_registered', {
       clientId: this.clientId,
       hasRoom,
@@ -278,6 +315,18 @@ export class MachineRelaySession {
     this.clientProtocolVersion = Number(json.protocolVersion);
     this.clientCapabilities = MachineRelaySession.parseCapabilities(json.capabilities);
     this.clientVerifyPublicKey = MachineRelaySession.safeLoadClientPublicKey(json.publicKey);
+    if (!this.clientVerifyPublicKey) {
+      writeAuditEvent('register_rejected', {
+        clientId: this.clientId,
+        reason: 'client_public_key_invalid',
+        traceId: this.traceId,
+        participantId: this.participantId,
+      });
+      return {
+        ok: false,
+        response: { type: 'error', message: 'client_public_key_invalid', traceId: this.traceId },
+      };
+    }
     const compat = this.validateClientCompatibility(
       this.clientProtocolVersion,
       this.clientCapabilities
@@ -292,6 +341,80 @@ export class MachineRelaySession {
       });
       return { ok: false, response: { type: 'error', message: compat.reason, traceId: this.traceId } };
     }
+    const challengeTtlMs = Number(process.env.OPENCLAW_REGISTER_CHALLENGE_TTL_MS || 60_000);
+    const now = Date.now();
+    const challenge = {
+      nonce: `reg-${now}-${Math.random().toString(36).slice(2, 10)}`,
+      issuedAt: now,
+      expiresAt: now + Math.max(1000, challengeTtlMs),
+      traceId: this.traceId,
+      participantId: this.participantId,
+      conversationId: String(json.conversationId || json.chatroomId || 'default').trim(),
+      publicKey: String(json.publicKey || '').trim(),
+      protocolVersion: this.clientProtocolVersion,
+      requireAttestation: this._requireDeviceAttestation,
+      strictPairing: this._strictPairingProfile,
+    };
+    this._pendingRegister = { ...json };
+    this._registerChallenge = challenge;
+    this._handshakeState = 'challenge_issued';
+    writeAuditEvent('register_challenge_issued', {
+      clientId: this.clientId,
+      traceId: this.traceId,
+      participantId: this.participantId,
+      requireAttestation: this._requireDeviceAttestation,
+    });
+    return {
+      ok: false,
+      response: {
+        type: 'challenge',
+        challengeType: 'register',
+        traceId: this.traceId,
+        nonce: challenge.nonce,
+        issuedAt: challenge.issuedAt,
+        expiresAt: challenge.expiresAt,
+        conversationId: challenge.conversationId,
+        participantId: challenge.participantId,
+        publicKey: challenge.publicKey,
+        protocolVersion: challenge.protocolVersion,
+        strictPairing: true,
+        requireAttestation: this._requireDeviceAttestation,
+        payload: registerChallengeSigningPayload(challenge),
+      },
+    };
+  }
+
+  handleRegisterChallengeResponse(json) {
+    if (this._handshakeState !== 'challenge_issued' || !this._pendingRegister || !this._registerChallenge) {
+      return {
+        ok: false,
+        response: { type: 'error', message: 'challenge_not_issued', traceId: this.traceId },
+      };
+    }
+    const result = validateRegisterChallengeResponse({
+      responseJson: json,
+      challenge: this._registerChallenge,
+      verifyPublicKey: this.clientVerifyPublicKey,
+      requireAttestation: this._requireDeviceAttestation,
+    });
+    if (!result.ok) {
+      writeAuditEvent('register_challenge_rejected', {
+        clientId: this.clientId,
+        reason: result.reason,
+        traceId: this.traceId,
+        participantId: this.participantId,
+      });
+      this._handshakeState = 'rejected';
+      return {
+        ok: false,
+        response: { type: 'error', message: result.reason, traceId: this.traceId },
+      };
+    }
+    this._handshakeState = 'paired';
+    const registerBody = this._pendingRegister;
+    this._pendingRegister = null;
+    this._registerChallenge = null;
+    this.completeRegisterAndConnectMiddleware(registerBody);
     return { ok: true };
   }
 
@@ -300,6 +423,16 @@ export class MachineRelaySession {
    */
   relaySignedReqToMiddleware(raw, json) {
     if (json.type !== 'req') return false;
+    if (this._handshakeState !== 'ready_for_agent_req') {
+      if (this._strictPairingProfile) {
+        this.notifyClientJson({
+          type: 'error',
+          message: 'pairing_not_ready',
+          traceId: this.traceId,
+        });
+      }
+      return true;
+    }
 
     if (this.config.SINGLE_CLIENT_MODE) {
       return this.relaySignedReqSingleClient(raw, json);
@@ -357,6 +490,16 @@ export class MachineRelaySession {
    * @returns {boolean} true if handled (including errors to client)
    */
   relaySignedReqSingleClient(raw, json) {
+    if (this._handshakeState !== 'ready_for_agent_req') {
+      if (this._strictPairingProfile) {
+        this.notifyClientJson({
+          type: 'error',
+          message: 'pairing_not_ready',
+          traceId: this.traceId,
+        });
+      }
+      return true;
+    }
     if (!this.chatroomBoxKeys?.peerPublicKey) {
       return false;
     }

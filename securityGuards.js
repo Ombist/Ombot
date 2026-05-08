@@ -121,3 +121,90 @@ export function validateReqSignature({
   nonceMap.set(nonce, nowMs);
   return { ok: true };
 }
+
+export function registerChallengeSigningPayload(challenge) {
+  const body = {
+    challengeType: 'register',
+    nonce: String(challenge?.nonce || ''),
+    issuedAt: Number(challenge?.issuedAt || 0),
+    expiresAt: Number(challenge?.expiresAt || 0),
+    traceId: String(challenge?.traceId || ''),
+    participantId: String(challenge?.participantId || ''),
+    conversationId: String(challenge?.conversationId || ''),
+    publicKey: String(challenge?.publicKey || ''),
+    protocolVersion: Number(challenge?.protocolVersion || 0),
+  };
+  return JSON.stringify(sortKeysDeep(body));
+}
+
+export function registerChallengeClientDataHashBase64(challenge) {
+  const payload = registerChallengeSigningPayload(challenge);
+  return crypto.createHash('sha256').update(payload, 'utf8').digest('base64');
+}
+
+export function validateRegisterChallengeResponse({
+  responseJson,
+  challenge,
+  verifyPublicKey,
+  requireAttestation,
+  nowMs = Date.now(),
+}) {
+  const nonce = String(responseJson?.nonce || '').trim();
+  if (!nonce || nonce !== String(challenge?.nonce || '')) {
+    return { ok: false, reason: 'challenge_nonce_mismatch' };
+  }
+  const ts = Number(responseJson?.timestamp || 0);
+  if (!Number.isFinite(ts) || ts <= 0) {
+    return { ok: false, reason: 'challenge_timestamp_invalid' };
+  }
+  if (ts > nowMs + 60_000) {
+    return { ok: false, reason: 'challenge_timestamp_from_future' };
+  }
+  const expiresAt = Number(challenge?.expiresAt || 0);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0 || nowMs > expiresAt) {
+    return { ok: false, reason: 'challenge_expired' };
+  }
+  if (!verifyPublicKey) {
+    return { ok: false, reason: 'signature_key_missing' };
+  }
+  const signatureHex = String(responseJson?.signature || '').trim();
+  if (!signatureHex) {
+    return { ok: false, reason: 'challenge_signature_missing' };
+  }
+
+  const signingBody = `${registerChallengeSigningPayload(challenge)}|${ts}`;
+  let verified = false;
+  try {
+    verified = verify(verifyPublicKey, signingBody, signatureHex);
+  } catch {
+    verified = false;
+  }
+  if (!verified) return { ok: false, reason: 'challenge_signature_invalid' };
+
+  if (requireAttestation) {
+    const att = responseJson?.attestation;
+    if (!att || typeof att !== 'object') {
+      return { ok: false, reason: 'attestation_missing' };
+    }
+    const provider = String(att.provider || '').trim();
+    const keyId = String(att.keyId || '').trim();
+    const assertion = String(att.assertion || '').trim();
+    const clientDataHash = String(att.clientDataHash || '').trim();
+    if (!provider || !keyId || !assertion || !clientDataHash) {
+      return { ok: false, reason: 'attestation_fields_missing' };
+    }
+    const expectedHash = registerChallengeClientDataHashBase64(challenge);
+    if (clientDataHash !== expectedHash) {
+      return { ok: false, reason: 'attestation_client_data_hash_mismatch' };
+    }
+    const allowUnverified = process.env.OPENCLAW_ALLOW_UNVERIFIED_ATTESTATION === '1';
+    if (!allowUnverified) {
+      const verdict = String(att.verdict || '').trim().toLowerCase();
+      if (verdict !== 'ok') {
+        return { ok: false, reason: 'attestation_verdict_missing_or_not_ok' };
+      }
+    }
+  }
+
+  return { ok: true };
+}
