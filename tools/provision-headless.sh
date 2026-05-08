@@ -132,6 +132,18 @@ export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 npm install -g openclaw@latest"
 
+if [[ -z "${OPENCLAW_GATEWAY_TOKEN}" ]]; then
+  OPENCLAW_GATEWAY_TOKEN="$(run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; node -e \"const c=require('crypto');process.stdout.write(c.randomBytes(32).toString('hex'));\"" || true)"
+  if [[ -z "${OPENCLAW_GATEWAY_TOKEN}" ]] && command -v openssl >/dev/null 2>&1; then
+    OPENCLAW_GATEWAY_TOKEN="$(openssl rand -hex 32 2>/dev/null || true)"
+  fi
+  if [[ -z "${OPENCLAW_GATEWAY_TOKEN}" ]]; then
+    echo "ombist-provision: failed to generate OPENCLAW_GATEWAY_TOKEN" >&2
+    exit 1
+  fi
+  echo "ombist-provision: generated gateway token for local auth."
+fi
+
 echo "ombist-provision: cloning/updating Ombot..."
 if as_root test -d "${OMBOT_REPO_DIR}/.git"; then
   run_as_ombot "git -C '${OMBOT_REPO_DIR}' pull --ff-only"
@@ -272,7 +284,9 @@ run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"
 export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
 export OPENCLAW_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
-openclaw config set gateway.mode local" || {
+openclaw config set gateway.mode local; \
+openclaw config set gateway.auth.mode token; \
+openclaw config set gateway.auth.token '${OPENCLAW_GATEWAY_TOKEN}'" || {
   echo "ombist-provision: warning: openclaw config set gateway.mode local failed (gateway may stay on status=78/CONFIG)" >&2
 }
 

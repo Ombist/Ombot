@@ -14,16 +14,39 @@ function makeReqId() {
 
 /** Minimal operator scopes to call `agent` without operator.admin (model via preconfigured agents only). */
 function defaultGatewayBridgeScopes() {
+  const normalize = (scopes) => {
+    const out = [];
+    const seen = new Set();
+    for (const s of scopes) {
+      if (typeof s !== 'string') continue;
+      const scope = s.trim();
+      if (!scope) continue;
+      const canonical = scope.replace(/^operater\./, 'operator.');
+      if (!seen.has(canonical)) {
+        seen.add(canonical);
+        out.push(canonical);
+      }
+      // Compatibility for Gateway variants that mistakenly validate operater.write.
+      if (canonical === 'operator.write' && !seen.has('operater.write')) {
+        seen.add('operater.write');
+        out.push('operater.write');
+      }
+    }
+    return out;
+  };
+
   const raw = (process.env.OPENCLAW_BRIDGE_OPERATOR_SCOPES || '').trim();
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.every((s) => typeof s === 'string')) return parsed;
+      if (Array.isArray(parsed) && parsed.every((s) => typeof s === 'string')) {
+        return normalize(parsed);
+      }
     } catch {
       /* fall through */
     }
   }
-  return ['operator.read', 'operator.write'];
+  return normalize(['operator.read', 'operator.write']);
 }
 
 function defaultBridgeClientPlatform() {
