@@ -212,7 +212,7 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_BRIDGE_CLIENT_ID` | `openclaw` | `connect.params.client.id`（新版 Gateway 可能限制 allowed values） |
 | `OPENCLAW_BRIDGE_CLIENT_PLATFORM` | auto (`linux`/`darwin`/`windows`) | `connect.params.client.platform` |
 | `OPENCLAW_BRIDGE_CLIENT_MODE` | `service` | `connect.params.client.mode` |
-| `OPENCLAW_BRIDGE_OPERATOR_SCOPES` | (empty → `["operator.read","operator.write","operater.write"]`) | JSON array of operator scopes on `connect`; `operater.*` 會自動正規化為 `operator.*`，且 `operator.write` 會自動補送 `operater.write` 以相容舊版/拼字錯誤的 Gateway |
+| `OPENCLAW_BRIDGE_OPERATOR_SCOPES` | (empty → `["operator.read","operator.write","operater.write"]`) | JSON array of operator scopes on `connect`; `operater.*` 會自動正規化為 `operator.*`。無論此變數如何設定，程式都會強制補齊 `operator.read` 與 `operator.write`（並補送 `operater.write`）以避免 `missing scope: operator.write` |
 | `OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID` | same as `OPENCLAW_BRIDGE_AGENT_ID` | Gateway `agent` params `agentId` on each turn |
 | `OPENCLAW_BRIDGE_REQ_TIMEOUT_MS` | `120000` | Per-turn timeout waiting for Gateway `res` |
 

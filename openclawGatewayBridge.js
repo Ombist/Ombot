@@ -14,6 +14,7 @@ function makeReqId() {
 
 /** Minimal operator scopes to call `agent` without operator.admin (model via preconfigured agents only). */
 function defaultGatewayBridgeScopes() {
+  const REQUIRED = ['operator.read', 'operator.write'];
   const normalize = (scopes) => {
     const out = [];
     const seen = new Set();
@@ -28,6 +29,18 @@ function defaultGatewayBridgeScopes() {
       }
       // Compatibility for Gateway variants that mistakenly validate operater.write.
       if (canonical === 'operator.write' && !seen.has('operater.write')) {
+        seen.add('operater.write');
+        out.push('operater.write');
+      }
+    }
+
+    // Always enforce minimal scopes required by agent requests.
+    for (const required of REQUIRED) {
+      if (!seen.has(required)) {
+        seen.add(required);
+        out.push(required);
+      }
+      if (required === 'operator.write' && !seen.has('operater.write')) {
         seen.add('operater.write');
         out.push('operater.write');
       }
