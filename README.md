@@ -208,7 +208,7 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_BRIDGE_PHONE_METHOD` | `agent` | Phone `req.method` that carries user text |
 | `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` | `agent` | Gateway `req.method` for a model turn |
 | `OPENCLAW_BRIDGE_MIN_PROTOCOL` / `MAX_PROTOCOL` | `1` / `9` | Passed in `connect` params |
-| `OPENCLAW_BRIDGE_ROLE` | `admin`（未設或設 `operator` 皆自動提升為 `admin`） | `connect.params.role`；為相容部分 Gateway 的 role-based scope gating，預設使用 `admin` |
+| `OPENCLAW_BRIDGE_ROLE` | `operator` | `connect.params.role`；為相容較嚴格的 Gateway，若設成 `admin` 會在程式內自動降為 `operator` |
 | `OPENCLAW_BRIDGE_CLIENT_ID` | `openclaw` | `connect.params.client.id`（新版 Gateway 可能限制 allowed values） |
 | `OPENCLAW_BRIDGE_CLIENT_PLATFORM` | auto (`linux`/`darwin`/`windows`) | `connect.params.client.platform` |
 | `OPENCLAW_BRIDGE_CLIENT_MODE` | `service` | `connect.params.client.mode` |

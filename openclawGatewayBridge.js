@@ -82,8 +82,8 @@ function defaultBridgeClientId() {
 
 function defaultGatewayRole() {
   const raw = (process.env.OPENCLAW_BRIDGE_ROLE || '').trim().toLowerCase();
-  // Some Gateway builds gate write scopes by role. Promote operator -> admin for compatibility.
-  if (!raw || raw === 'operator') return 'admin';
+  // Keep role strict for gateways that only accept "operator".
+  if (!raw || raw === 'admin') return 'operator';
   return raw;
 }
 
