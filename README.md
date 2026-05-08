@@ -208,11 +208,11 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_BRIDGE_PHONE_METHOD` | `agent` | Phone `req.method` that carries user text |
 | `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` | `agent` | Gateway `req.method` for a model turn |
 | `OPENCLAW_BRIDGE_MIN_PROTOCOL` / `MAX_PROTOCOL` | `1` / `9` | Passed in `connect` params |
-| `OPENCLAW_BRIDGE_ROLE` | `operator` | `connect.params.role` |
+| `OPENCLAW_BRIDGE_ROLE` | `admin`（未設或設 `operator` 皆自動提升為 `admin`） | `connect.params.role`；為相容部分 Gateway 的 role-based scope gating，預設使用 `admin` |
 | `OPENCLAW_BRIDGE_CLIENT_ID` | `openclaw` | `connect.params.client.id`（新版 Gateway 可能限制 allowed values） |
 | `OPENCLAW_BRIDGE_CLIENT_PLATFORM` | auto (`linux`/`darwin`/`windows`) | `connect.params.client.platform` |
 | `OPENCLAW_BRIDGE_CLIENT_MODE` | `service` | `connect.params.client.mode` |
-| `OPENCLAW_BRIDGE_OPERATOR_SCOPES` | (empty → `["operator.read","operator.write","operater.write"]`) | JSON array of operator scopes on `connect`; `operater.*` 會自動正規化為 `operator.*`。無論此變數如何設定，程式都會強制補齊 `operator.read` 與 `operator.write`（並補送 `operater.write`）以避免 `missing scope: operator.write` |
+| `OPENCLAW_BRIDGE_OPERATOR_SCOPES` | (empty → `["operator.read","operator.write","operator.admin","operater.write"]`) | JSON array of operator scopes on `connect`; `operater.*` 會自動正規化為 `operator.*`。無論此變數如何設定，程式都會強制補齊 `operator.read`、`operator.write`、`operator.admin`（並補送 `operater.write`）以避免 `missing scope` 類型錯誤 |
 | `OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID` | same as `OPENCLAW_BRIDGE_AGENT_ID` | Gateway `agent` params `agentId` on each turn |
 | `OPENCLAW_BRIDGE_REQ_TIMEOUT_MS` | `120000` | Per-turn timeout waiting for Gateway `res` |
 

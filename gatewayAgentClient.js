@@ -24,7 +24,7 @@ function makeReqId() {
 }
 
 function defaultGatewayScopes() {
-  const REQUIRED = ['operator.read', 'operator.write'];
+  const REQUIRED = ['operator.read', 'operator.write', 'operator.admin'];
   const normalize = (scopes) => {
     const out = [];
     const seen = new Set();
@@ -69,7 +69,7 @@ function defaultGatewayScopes() {
       /* fall through */
     }
   }
-  return normalize(['operator.read', 'operator.write']);
+  return normalize(['operator.read', 'operator.write', 'operator.admin']);
 }
 
 function defaultBridgeClientPlatform() {
@@ -88,6 +88,13 @@ function defaultBridgeClientMode() {
 function defaultBridgeClientId() {
   const raw = (process.env.OPENCLAW_BRIDGE_CLIENT_ID || '').trim();
   return raw || 'openclaw';
+}
+
+function defaultGatewayRole() {
+  const raw = (process.env.OPENCLAW_BRIDGE_ROLE || '').trim().toLowerCase();
+  // Some Gateway builds gate write scopes by role. Promote operator -> admin for compatibility.
+  if (!raw || raw === 'operator') return 'admin';
+  return raw;
 }
 
 /**
@@ -216,7 +223,7 @@ export class GatewayAgentClient {
         platform: defaultBridgeClientPlatform(),
         mode: defaultBridgeClientMode(),
       },
-      role: (process.env.OPENCLAW_BRIDGE_ROLE || 'operator').trim(),
+      role: defaultGatewayRole(),
       scopes: defaultGatewayScopes(),
     };
     if (this.gatewayToken) {

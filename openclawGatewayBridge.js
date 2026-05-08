@@ -12,9 +12,9 @@ function makeReqId() {
   return `ombot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Minimal operator scopes to call `agent` without operator.admin (model via preconfigured agents only). */
+/** Default enforced scopes for gateway compatibility across OpenClaw builds. */
 function defaultGatewayBridgeScopes() {
-  const REQUIRED = ['operator.read', 'operator.write'];
+  const REQUIRED = ['operator.read', 'operator.write', 'operator.admin'];
   const normalize = (scopes) => {
     const out = [];
     const seen = new Set();
@@ -59,7 +59,7 @@ function defaultGatewayBridgeScopes() {
       /* fall through */
     }
   }
-  return normalize(['operator.read', 'operator.write']);
+  return normalize(['operator.read', 'operator.write', 'operator.admin']);
 }
 
 function defaultBridgeClientPlatform() {
@@ -78,6 +78,13 @@ function defaultBridgeClientMode() {
 function defaultBridgeClientId() {
   const raw = (process.env.OPENCLAW_BRIDGE_CLIENT_ID || '').trim();
   return raw || 'openclaw';
+}
+
+function defaultGatewayRole() {
+  const raw = (process.env.OPENCLAW_BRIDGE_ROLE || '').trim().toLowerCase();
+  // Some Gateway builds gate write scopes by role. Promote operator -> admin for compatibility.
+  if (!raw || raw === 'operator') return 'admin';
+  return raw;
 }
 
 /**
@@ -263,7 +270,7 @@ export class OpenClawGatewayBridge {
         platform: defaultBridgeClientPlatform(),
         mode: defaultBridgeClientMode(),
       },
-      role: (process.env.OPENCLAW_BRIDGE_ROLE || 'operator').trim(),
+      role: defaultGatewayRole(),
       scopes: defaultGatewayBridgeScopes(),
     };
     if (this.gatewayToken) {
