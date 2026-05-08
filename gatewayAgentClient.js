@@ -24,7 +24,7 @@ function makeReqId() {
 }
 
 function defaultGatewayScopes() {
-  const REQUIRED = ['operator.read', 'operator.write', 'operator.admin'];
+  const REQUIRED = ['operator.read', 'operator.write'];
   const parseScopes = (raw) => {
     if (!raw) return null;
     try {
@@ -58,11 +58,6 @@ function defaultGatewayScopes() {
         seen.add(canonical);
         out.push(canonical);
       }
-      // Compatibility for Gateway variants that mistakenly validate operater.write.
-      if (canonical === 'operator.write' && !seen.has('operater.write')) {
-        seen.add('operater.write');
-        out.push('operater.write');
-      }
     }
 
     // Always enforce minimal scopes required by agent requests.
@@ -70,10 +65,6 @@ function defaultGatewayScopes() {
       if (!seen.has(required)) {
         seen.add(required);
         out.push(required);
-      }
-      if (required === 'operator.write' && !seen.has('operater.write')) {
-        seen.add('operater.write');
-        out.push('operater.write');
       }
     }
     return out;
