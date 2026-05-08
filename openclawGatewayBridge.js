@@ -397,6 +397,8 @@ export class OpenClawGatewayBridge {
           message: userText,
           idempotencyKey: id,
           agentId: this.defaultGatewayAgentId,
+          // Some gateway builds validate scopes again on each agent request.
+          scopes: defaultGatewayBridgeScopes(),
         },
       };
       const timeout = setTimeout(() => {

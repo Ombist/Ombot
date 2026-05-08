@@ -322,6 +322,8 @@ export class GatewayAgentClient {
           message: userText,
           idempotencyKey: id,
           agentId,
+          // Some gateway builds validate scopes again on each agent request.
+          scopes: defaultGatewayScopes(),
         },
       };
       const timeout = setTimeout(() => {
