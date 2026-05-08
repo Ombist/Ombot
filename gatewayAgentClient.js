@@ -25,6 +25,27 @@ function makeReqId() {
 
 function defaultGatewayScopes() {
   const REQUIRED = ['operator.read', 'operator.write', 'operator.admin'];
+  const parseScopes = (raw) => {
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.every((s) => typeof s === 'string')) return parsed;
+    } catch {
+      /* fall through */
+    }
+    // Tolerate EnvironmentFile values like: [operator.read,operator.write]
+    const t = raw.trim();
+    if (t.startsWith('[') && t.endsWith(']')) {
+      const inner = t.slice(1, -1).trim();
+      if (!inner) return [];
+      const items = inner
+        .split(',')
+        .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
+        .filter(Boolean);
+      if (items.length > 0) return items;
+    }
+    return null;
+  };
   const normalize = (scopes) => {
     const out = [];
     const seen = new Set();
@@ -60,13 +81,9 @@ function defaultGatewayScopes() {
 
   const raw = (process.env.OPENCLAW_BRIDGE_OPERATOR_SCOPES || '').trim();
   if (raw) {
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.every((s) => typeof s === 'string')) {
-        return normalize(parsed);
-      }
-    } catch {
-      /* fall through */
+    const parsed = parseScopes(raw);
+    if (parsed) {
+      return normalize(parsed);
     }
   }
   return normalize(['operator.read', 'operator.write', 'operator.admin']);
