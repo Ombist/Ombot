@@ -111,10 +111,10 @@ function defaultGatewayRole() {
 }
 
 function gatewayProtocolVersions() {
-  const min = Number(process.env.OPENCLAW_BRIDGE_MIN_PROTOCOL ?? 4);
+  const min = Number(process.env.OPENCLAW_BRIDGE_MIN_PROTOCOL ?? 3);
   const max = Number(process.env.OPENCLAW_BRIDGE_MAX_PROTOCOL ?? 9);
   return {
-    minProtocol: Number.isFinite(min) ? min : 4,
+    minProtocol: Number.isFinite(min) ? min : 3,
     maxProtocol: Number.isFinite(max) ? max : 9,
   };
 }

@@ -143,7 +143,7 @@ describe('mock gateway server handshake', () => {
     await new Promise((r) => wss.close(r));
   });
 
-  it('event connect.challenge then connect carries signed device (protocol v4)', async () => {
+  it('event connect.challenge then connect carries signed device (connect protocol range)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ombot-bridge-proto-'));
     vi.stubEnv('OPENCLAW_DATA_DIR', dir);
     vi.stubEnv('OPENCLAW_GATEWAY_DEVICE_STATE_PATH', path.join(dir, 'device.json'));
@@ -172,7 +172,7 @@ describe('mock gateway server handshake', () => {
         if (msg.type === 'req' && msg.method === 'connect') {
           expect(msg.params.device).toBeTruthy();
           expect(msg.params.device.nonce).toBe(nonce);
-          expect(msg.params.minProtocol).toBe(4);
+          expect(msg.params.minProtocol).toBe(3);
           ws.send(
             JSON.stringify({
               type: 'res',
@@ -228,7 +228,7 @@ describe('mock gateway server handshake', () => {
         id: 'c-proto',
         method: 'connect',
         params: {
-          minProtocol: 4,
+          minProtocol: 3,
           maxProtocol: 9,
           client: {
             id: 'openclaw',

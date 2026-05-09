@@ -125,10 +125,12 @@ function defaultGatewayRole() {
 }
 
 function gatewayProtocolVersions() {
-  const min = Number(process.env.OPENCLAW_BRIDGE_MIN_PROTOCOL ?? 4);
+  // Default min 3 so `connect` overlaps Gateway builds that negotiate protocol 3 (min 4 alone causes
+  // INVALID_REQUEST protocol mismatch / expectedProtocol 3).
+  const min = Number(process.env.OPENCLAW_BRIDGE_MIN_PROTOCOL ?? 3);
   const max = Number(process.env.OPENCLAW_BRIDGE_MAX_PROTOCOL ?? 9);
   return {
-    minProtocol: Number.isFinite(min) ? min : 4,
+    minProtocol: Number.isFinite(min) ? min : 3,
     maxProtocol: Number.isFinite(max) ? max : 9,
   };
 }
