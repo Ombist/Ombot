@@ -212,7 +212,7 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_GATEWAY_DEVICE_INSECURE_SKIP` | `0` | Set `1`/`true` to omit `device` on `connect` (debug; Gateway must allow insecure device auth) |
 | `OPENCLAW_GATEWAY_CONNECT_CHALLENGE_TIMEOUT_MS` | `15000` | Close connection if no `connect.challenge` event arrives in time (unless legacy blind connect is enabled) |
 | `OPENCLAW_GATEWAY_LEGACY_BLIND_CONNECT` | `0` | Set `1` if Gateway does not emit challenge events and only returns a nonce in the first `connect` error payload |
-| `OPENCLAW_BRIDGE_AGENT_ID` | `default` | Must match Phone conversation `agentId` for sessionKey |
+| `OPENCLAW_BRIDGE_AGENT_ID` | `default` | 須與 **OpenClaw `agents.list` 內的 id** 及手機對話 `agentId` 一致；Gateway 若無名為 `default` 的 agent 會報 `unknown agent id`。Phone 未帶 `agentId` 註冊時，Ombot 會改用此環境變數。 |
 | `OPENCLAW_BRIDGE_CONVERSATION_ID` | `default` | Must match Phone `conversationId` |
 | `OPENCLAW_BRIDGE_PARTICIPANT_ID` | `default` | Must match Phone `participantId` |
 | `OPENCLAW_BRIDGE_PHONE_METHOD` | `agent` | Phone `req.method` that carries user text |

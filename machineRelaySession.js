@@ -22,6 +22,18 @@ import {
   validateReqSignature,
 } from './securityGuards.js';
 
+/** Phone 未帶 `agentId` 時，與 `openclaw.json` agents.list 對齊（勿硬寫 `default` 除非 Gateway 真有此 id）。 */
+function bridgeAgentIdFromEnv() {
+  return (process.env.OPENCLAW_BRIDGE_AGENT_ID || '').trim();
+}
+
+function gatewayTurnAgentIdFromEnv() {
+  return (
+    (process.env.OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID || '').trim() ||
+    bridgeAgentIdFromEnv()
+  );
+}
+
 function assistantTextToPhoneRes(text) {
   return JSON.stringify({
     type: 'res',
@@ -234,11 +246,11 @@ export class MachineRelaySession {
       });
       return;
     }
-    const aid = json.agentId || json.appId || 'default';
+    const aid = String(json.agentId || json.appId || bridgeAgentIdFromEnv() || 'default').trim() || 'default';
     const roomId = String(json.conversationId || json.chatroomId || 'default').trim();
     const pid =
       (json.participantId == null ? '' : String(json.participantId).trim()) || 'default';
-    this.singleClientAgentId = String(aid).trim() || 'default';
+    this.singleClientAgentId = aid;
     this.chatroomBoxKeys = this.getOrCreateChatroomKeys(aid, roomId, pid);
     try {
       this.chatroomBoxKeys.peerPublicKey = base64ToPublicKey(boxB64);
@@ -563,11 +575,16 @@ export class MachineRelaySession {
       return true;
     }
     this._gatewayClient.ensureConnected();
-    const agentId =
-      json.params && typeof json.params === 'object' && json.params.agentId != null
+    const fromParams =
+      json.params &&
+      typeof json.params === 'object' &&
+      json.params.agentId != null &&
+      String(json.params.agentId).trim() !== ''
         ? String(json.params.agentId).trim()
-        : this.singleClientAgentId || 'default';
-    this._gatewayClient.enqueueAgentTurn(userText, agentId || 'default');
+        : '';
+    const agentId =
+      fromParams || this.singleClientAgentId || gatewayTurnAgentIdFromEnv() || 'default';
+    this._gatewayClient.enqueueAgentTurn(userText, agentId);
     return true;
   }
 
@@ -745,7 +762,7 @@ export class MachineRelaySession {
         const json = JSON.parse(raw);
 
         if (json.type === 'register_public_key' && (json.boxPublicKey || json.publicKey)) {
-          const aid = json.agentId || json.appId || 'default';
+          const aid = String(json.agentId || json.appId || bridgeAgentIdFromEnv() || 'default').trim() || 'default';
           const roomId = json.conversationId || json.chatroomId || 'default';
           const pid =
             (json.participantId == null ? '' : String(json.participantId).trim()) || 'default';
