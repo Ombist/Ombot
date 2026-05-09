@@ -21,6 +21,7 @@ import {
 } from './metrics.js';
 import { classifyGatewayError } from './gatewayErrorClassifier.js';
 import { ProviderFallbackClient } from './providerFallbackClient.js';
+import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
 
 function makeReqId() {
   return `ombot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -192,11 +193,7 @@ export class OpenClawGatewayBridge {
     this.gatewayUrl = (process.env.OPENCLAW_GATEWAY_URL || 'ws://127.0.0.1:18789').trim();
     this.gatewayToken = (process.env.OPENCLAW_GATEWAY_TOKEN || '').trim();
     this.agentMethod = (process.env.OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD || 'agent').trim();
-    this.defaultGatewayAgentId = (
-      process.env.OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID ||
-      process.env.OPENCLAW_BRIDGE_AGENT_ID ||
-      'default'
-    ).trim();
+    this.defaultGatewayAgentId = resolveGatewayTurnAgentId(opts.agentId);
 
     /** @type {WebSocket | null} */
     this.gatewayWs = null;
@@ -830,7 +827,9 @@ export function startOpenClawGatewayBridge(opts) {
     logger.warn('gateway_bridge_already_running');
     return activeBridge;
   }
-  const agentId = (process.env.OPENCLAW_BRIDGE_AGENT_ID || 'default').trim();
+  const agentId = resolveGatewayTurnAgentId(
+    process.env.OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID || process.env.OPENCLAW_BRIDGE_AGENT_ID
+  );
   const conversationId = (process.env.OPENCLAW_BRIDGE_CONVERSATION_ID || 'default').trim();
   const participantId = (process.env.OPENCLAW_BRIDGE_PARTICIPANT_ID || 'default').trim();
   activeBridge = new OpenClawGatewayBridge({

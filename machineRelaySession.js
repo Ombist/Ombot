@@ -5,6 +5,7 @@ import { loadChatroomKeysSync, saveChatroomKeysSync } from './chatroomStorage.js
 import { hexToBytes } from './ed25519.js';
 import { logger } from './logger.js';
 import { GatewayAgentClient } from './gatewayAgentClient.js';
+import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
 import {
   capabilityRejectTotal,
   encryptedMessagesTotal,
@@ -21,18 +22,6 @@ import {
   validateRegisterChallengeResponse,
   validateReqSignature,
 } from './securityGuards.js';
-
-/** Phone 未帶 `agentId` 時，與 `openclaw.json` agents.list 對齊（勿硬寫 `default` 除非 Gateway 真有此 id）。 */
-function bridgeAgentIdFromEnv() {
-  return (process.env.OPENCLAW_BRIDGE_AGENT_ID || '').trim();
-}
-
-function gatewayTurnAgentIdFromEnv() {
-  return (
-    (process.env.OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID || '').trim() ||
-    bridgeAgentIdFromEnv()
-  );
-}
 
 function assistantTextToPhoneRes(text) {
   return JSON.stringify({
@@ -246,7 +235,7 @@ export class MachineRelaySession {
       });
       return;
     }
-    const aid = String(json.agentId || json.appId || bridgeAgentIdFromEnv() || 'default').trim() || 'default';
+    const aid = resolveGatewayTurnAgentId(String(json.agentId || json.appId || '').trim() || undefined);
     const roomId = String(json.conversationId || json.chatroomId || 'default').trim();
     const pid =
       (json.participantId == null ? '' : String(json.participantId).trim()) || 'default';
@@ -582,8 +571,7 @@ export class MachineRelaySession {
       String(json.params.agentId).trim() !== ''
         ? String(json.params.agentId).trim()
         : '';
-    const agentId =
-      fromParams || this.singleClientAgentId || gatewayTurnAgentIdFromEnv() || 'default';
+    const agentId = resolveGatewayTurnAgentId(fromParams || this.singleClientAgentId || undefined);
     this._gatewayClient.enqueueAgentTurn(userText, agentId);
     return true;
   }
@@ -762,7 +750,7 @@ export class MachineRelaySession {
         const json = JSON.parse(raw);
 
         if (json.type === 'register_public_key' && (json.boxPublicKey || json.publicKey)) {
-          const aid = String(json.agentId || json.appId || bridgeAgentIdFromEnv() || 'default').trim() || 'default';
+          const aid = resolveGatewayTurnAgentId(String(json.agentId || json.appId || '').trim() || undefined);
           const roomId = json.conversationId || json.chatroomId || 'default';
           const pid =
             (json.participantId == null ? '' : String(json.participantId).trim()) || 'default';

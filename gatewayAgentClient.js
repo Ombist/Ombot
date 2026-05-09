@@ -17,6 +17,7 @@ import {
 } from './metrics.js';
 import { classifyGatewayError } from './gatewayErrorClassifier.js';
 import { ProviderFallbackClient } from './providerFallbackClient.js';
+import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
 
 /** Duplicated from openclawGatewayBridge.js to avoid circular imports. */
 function extractAssistantTextFromGateway(msg) {
@@ -222,7 +223,7 @@ export class GatewayAgentClient {
   }
 
   enqueueAgentTurn(userText, agentId) {
-    const aid = (agentId == null || String(agentId).trim() === '' ? 'default' : String(agentId).trim());
+    const aid = resolveGatewayTurnAgentId(agentId);
     this._queue.push({ text: userText, agentId: aid });
     this._drainQueue();
   }
