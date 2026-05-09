@@ -3,6 +3,10 @@
  * Ensures OpenClaw JSON has an `agents.list` entry matching Ombot's bridge agent id
  * (so Gateway accepts `agent` turns without "unknown agent id").
  *
+ * Prefer updating only `OPENCLAW_RUNTIME_CONFIG_PATH` (ombot-owned); provision copies to
+ * `/etc/ombot/openclaw.json` with `as_root cp`. Writable-only paths are typical; if `/etc` is
+ * passed without permission, that write is skipped when at least one path was updated.
+ *
  * Env:
  *   OMBIST_GATEWAY_AGENT_ID — agent id to ensure (default: default)
  *   OMBIST_GATEWAY_AGENT_MODEL — model.primary string (default: gpt-4o-mini)
@@ -46,6 +50,7 @@ function mergeAgents(j) {
   return true;
 }
 
+let wrotePaths = 0;
 for (const cfgPath of unique) {
   let raw;
   try {
@@ -62,8 +67,26 @@ for (const cfgPath of unique) {
     process.exit(1);
   }
   const added = mergeAgents(j);
-  fs.writeFileSync(cfgPath, `${JSON.stringify(j, null, 2)}\n`);
+  const out = `${JSON.stringify(j, null, 2)}\n`;
+  try {
+    fs.writeFileSync(cfgPath, out);
+  } catch (e) {
+    const code = e && e.code;
+    if (code === 'EACCES' || code === 'EPERM') {
+      console.error(
+        `ensure-openclaw-gateway-agent: skip write (not permitted): ${cfgPath} (${code})`
+      );
+      continue;
+    }
+    throw e;
+  }
+  wrotePaths += 1;
   console.log(
     `ensure-openclaw-gateway-agent: ${cfgPath} agentId=${agentId} primary=${primary} added=${added}`
   );
+}
+
+if (wrotePaths === 0) {
+  console.error('ensure-openclaw-gateway-agent: no config file was writable');
+  process.exit(1);
 }

@@ -339,7 +339,16 @@ openclaw config set gateway.auth.token '${OPENCLAW_GATEWAY_TOKEN}'" || {
 OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID:-default}"
 OMBIST_GATEWAY_AGENT_MODEL="${OMBIST_GATEWAY_AGENT_MODEL:-gpt-4o-mini}"
 echo "ombist-provision-single-bot: ensuring OpenClaw agents.list id=${OMBIST_GATEWAY_AGENT_ID} (model=${OMBIST_GATEWAY_AGENT_MODEL})..."
-run_as_ombot "export OMBIST_GATEWAY_AGENT_ID='${OMBIST_GATEWAY_AGENT_ID}' OMBIST_GATEWAY_AGENT_MODEL='${OMBIST_GATEWAY_AGENT_MODEL}' OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}' OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}' && node '${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs'"
+# Merge only into the ombot-owned runtime copy; publish to /etc via as_root cp below (avoids root/sudo quirks on node).
+run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
+export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
+export OMBIST_GATEWAY_AGENT_ID='${OMBIST_GATEWAY_AGENT_ID}'; \
+export OMBIST_GATEWAY_AGENT_MODEL='${OMBIST_GATEWAY_AGENT_MODEL}'; \
+export OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
+unset OPENCLAW_CONFIG_PATH; \
+node '${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs'"
+as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
+as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root cp "${OPENCLAW_RUNTIME_CONFIG_PATH}" "${OPENCLAW_CONFIG_PATH}"
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
