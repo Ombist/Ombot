@@ -94,12 +94,12 @@ function defaultBridgeClientPlatform() {
 
 function defaultBridgeClientMode() {
   const raw = (process.env.OPENCLAW_BRIDGE_CLIENT_MODE || '').trim().toLowerCase();
-  return raw || 'service';
+  return raw || 'operator';
 }
 
 function defaultBridgeClientId() {
   const raw = (process.env.OPENCLAW_BRIDGE_CLIENT_ID || '').trim();
-  return raw || 'openclaw';
+  return raw || 'cli';
 }
 
 function defaultGatewayRole() {
