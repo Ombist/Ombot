@@ -1,6 +1,15 @@
 import { WebSocket } from 'ws';
 import { logger } from './logger.js';
 import {
+  buildConnectDeviceBlock,
+  deviceAuthInsecureSkip,
+  gatewayLegacyBlindConnect,
+  loadOrCreateDeviceIdentity,
+  loadStoredDeviceToken,
+  loadStoredScopes,
+  persistHelloOkDeviceAuth,
+} from './gatewayDeviceIdentity.js';
+import {
   gatewayBridgeErrorsTotal,
   gatewayBridgeFallbackTotal,
   gatewayBridgeGateState,
@@ -113,6 +122,20 @@ function defaultGatewayRole() {
   return raw;
 }
 
+function gatewayProtocolVersions() {
+  const min = Number(process.env.OPENCLAW_BRIDGE_MIN_PROTOCOL ?? 4);
+  const max = Number(process.env.OPENCLAW_BRIDGE_MAX_PROTOCOL ?? 9);
+  return {
+    minProtocol: Number.isFinite(min) ? min : 4,
+    maxProtocol: Number.isFinite(max) ? max : 9,
+  };
+}
+
+function connectChallengeTimeoutMs() {
+  const raw = Number(process.env.OPENCLAW_GATEWAY_CONNECT_CHALLENGE_TIMEOUT_MS ?? 15_000);
+  return Number.isFinite(raw) && raw > 0 ? raw : 15_000;
+}
+
 /**
  * Outbound OpenClaw gateway WebSocket for single-client mode (no Ombers).
  * Mirrors the connect / agent handshake shape from openclawGatewayBridge.js.
@@ -152,6 +175,11 @@ export class GatewayAgentClient {
     ) && !this._strictPairingProfile;
     this._fallbackClient = this._autoFallbackEnabled ? new ProviderFallbackClient() : null;
     this._degradedReason = '';
+    /** OpenClaw Gateway `connect.challenge` handshake (see gateway/protocol.md). */
+    this._connectNonce = null;
+    this._connectSent = false;
+    this._connectChallengeTimer = null;
+    this._gatewayIdentity = null;
     gatewayBridgeGateState.labels('pairing').set(-1);
     gatewayBridgeGateState.labels('scope').set(-1);
     gatewayBridgeGateState.labels('provider').set(
@@ -161,6 +189,7 @@ export class GatewayAgentClient {
 
   destroy() {
     this._destroyed = true;
+    this._clearConnectChallengeTimer();
     if (this._reconnectTimer) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
@@ -219,67 +248,6 @@ export class GatewayAgentClient {
     return null;
   }
 
-  _isScopeGrantedOnConnect(msg) {
-    const granted = Array.isArray(msg?.payload?.grantedScopes) ? msg.payload.grantedScopes : [];
-    if (granted.length === 0) return true;
-    const normalized = granted
-      .filter((x) => typeof x === 'string')
-      .map((x) => x.trim().toLowerCase());
-    return normalized.includes('operator.write');
-  }
-
-  _sendConnectChallengeResponse(challenge) {
-    if (!this.gatewayWs || this.gatewayWs.readyState !== 1) return;
-    const id = makeReqId();
-    const frame = {
-      type: 'req',
-      id,
-      method: 'connect.challenge',
-      params: {
-        nonce: String(challenge?.nonce || '').trim(),
-        timestamp: Date.now(),
-        response: {
-          mode: 'service',
-          clientId: defaultBridgeClientId(),
-          platform: defaultBridgeClientPlatform(),
-          tokenPresent: Boolean(this.gatewayToken),
-        },
-      },
-    };
-    this._pending.set(id, (msg) => {
-      if (msg && msg.ok === true) {
-        if (!this._isScopeGrantedOnConnect(msg)) {
-          gatewayBridgeErrorsTotal.inc();
-          this._recordReject('connect', { code: 'SCOPE_DENIED', message: 'operator.write not granted' });
-          try {
-            this.gatewayWs?.close();
-          } catch {
-            /* ignore */
-          }
-          return;
-        }
-        this._gatewayConnected = true;
-        gatewayBridgeGateState.labels('pairing').set(1);
-        gatewayBridgeGateState.labels('scope').set(1);
-        logger.info('single_client_gateway_connected_after_challenge', { id });
-        this._drainQueue();
-      } else {
-        gatewayBridgeErrorsTotal.inc();
-        this._recordReject('connect_challenge', msg?.error ?? msg);
-        logger.error('single_client_gateway_connect_challenge_rejected', {
-          id,
-          error: msg?.error,
-        });
-        try {
-          this.gatewayWs?.close();
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-    this.gatewayWs.send(JSON.stringify(frame));
-  }
-
   async _tryFallback(text, reason) {
     if (!this._fallbackClient || !this._fallbackClient.isConfigured()) return false;
     try {
@@ -301,6 +269,259 @@ export class GatewayAgentClient {
     }
   }
 
+  _clearConnectChallengeTimer() {
+    if (this._connectChallengeTimer) {
+      clearTimeout(this._connectChallengeTimer);
+      this._connectChallengeTimer = null;
+    }
+  }
+
+  _armConnectChallengeTimer() {
+    if (this._destroyed || this._connectSent) return;
+    this._clearConnectChallengeTimer();
+    const limitMs = connectChallengeTimeoutMs();
+    const started = Date.now();
+    this._connectChallengeTimer = setTimeout(() => {
+      if (this._destroyed || this._connectSent || !this.gatewayWs) return;
+      if (gatewayLegacyBlindConnect()) {
+        this._sendLegacyBlindConnect();
+        return;
+      }
+      gatewayBridgeErrorsTotal.inc();
+      const elapsedMs = Date.now() - started;
+      logger.error('single_client_gateway_challenge_timeout', { elapsedMs, limitMs });
+      try {
+        this.onError(new Error(`gateway_connect_challenge_timeout:${elapsedMs}ms`));
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.gatewayWs?.close(1008, 'connect challenge timeout');
+      } catch {
+        /* ignore */
+      }
+    }, limitMs);
+  }
+
+  _beginHandshakeAfterOpen() {
+    this._connectNonce = null;
+    this._connectSent = false;
+    if (deviceAuthInsecureSkip()) {
+      this._clearConnectChallengeTimer();
+      this._sendConnectHandshake({ omitDevice: true, nonce: '' });
+      return;
+    }
+    if (gatewayLegacyBlindConnect()) {
+      this._sendLegacyBlindConnect();
+      return;
+    }
+    this._armConnectChallengeTimer();
+  }
+
+  /**
+   * Legacy gateway that responds to an initial device-less `connect` with CHALLENGE_REQUIRED.
+   */
+  _sendLegacyBlindConnect() {
+    if (!this.gatewayWs || this.gatewayWs.readyState !== 1) return;
+    this._clearConnectChallengeTimer();
+    this._sendConnectHandshake({ omitDevice: true, nonce: '' });
+  }
+
+  _handleConnectChallengeEvent(msg) {
+    const payload = msg?.payload && typeof msg.payload === 'object' ? msg.payload : {};
+    const nonce = typeof payload.nonce === 'string' ? payload.nonce.trim() : '';
+    if (!nonce) {
+      gatewayBridgeErrorsTotal.inc();
+      logger.error('single_client_gateway_challenge_missing_nonce');
+      try {
+        this.onError(new Error('gateway_connect_challenge_missing_nonce'));
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.gatewayWs?.close(1008, 'connect challenge missing nonce');
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    this._clearConnectChallengeTimer();
+    this._connectNonce = nonce;
+    if (!this._connectSent) {
+      this._sendConnectHandshake({ omitDevice: deviceAuthInsecureSkip(), nonce });
+    }
+  }
+
+  _resolveSignatureToken() {
+    const explicit = (this.gatewayToken || '').trim();
+    const stored = loadStoredDeviceToken();
+    return explicit || stored || '';
+  }
+
+  _resolveScopesForConnect() {
+    const explicit = (this.gatewayToken || '').trim();
+    const storedTok = loadStoredDeviceToken();
+    const storedScopes = loadStoredScopes();
+    const usingStoredOnly = !explicit && storedTok && Array.isArray(storedScopes) && storedScopes.length > 0;
+    if (usingStoredOnly) {
+      const REQUIRED = ['operator.read', 'operator.write'];
+      const out = [...storedScopes.map((s) => String(s).trim()).filter(Boolean)];
+      const seen = new Set(out.map((x) => x.toLowerCase()));
+      for (const r of REQUIRED) {
+        if (!seen.has(r)) {
+          seen.add(r);
+          out.push(r);
+        }
+      }
+      return out;
+    }
+    return defaultGatewayScopes();
+  }
+
+  _composeConnectParams({ omitDevice, nonce }) {
+    const { minProtocol, maxProtocol } = gatewayProtocolVersions();
+    const role = defaultGatewayRole();
+    const scopes = this._resolveScopesForConnect();
+    const clientId = defaultBridgeClientId();
+    const clientMode = defaultBridgeClientMode();
+    const platform = defaultBridgeClientPlatform();
+    const deviceFamily = (process.env.OPENCLAW_BRIDGE_DEVICE_FAMILY || '').trim();
+    const explicitTok = (this.gatewayToken || '').trim();
+    const storedTok = loadStoredDeviceToken();
+    const authToken = explicitTok || storedTok;
+
+    const params = {
+      minProtocol,
+      maxProtocol,
+      client: {
+        id: clientId,
+        version: process.env.npm_package_version || '1.0.0',
+        platform,
+        mode: clientMode,
+      },
+      role,
+      scopes,
+      caps: [],
+      commands: [],
+      permissions: {},
+    };
+    if (authToken) {
+      params.auth = { token: authToken };
+    }
+
+    if (!omitDevice && nonce) {
+      if (!this._gatewayIdentity) {
+        this._gatewayIdentity = loadOrCreateDeviceIdentity();
+      }
+      const signatureToken = this._resolveSignatureToken();
+      params.device = buildConnectDeviceBlock({
+        identity: this._gatewayIdentity,
+        nonce,
+        scopes,
+        role,
+        clientId,
+        clientMode,
+        platform,
+        deviceFamily: deviceFamily || undefined,
+        signatureToken,
+      });
+    }
+    return params;
+  }
+
+  _isHelloOkAuthorized(msg) {
+    const granted =
+      (Array.isArray(msg?.payload?.grantedScopes) ? msg.payload.grantedScopes : null) ||
+      (Array.isArray(msg?.payload?.auth?.scopes) ? msg.payload.auth.scopes : null);
+    if (!granted || granted.length === 0) return true;
+    const normalized = granted
+      .filter((x) => typeof x === 'string')
+      .map((x) => x.trim().toLowerCase());
+    return normalized.includes('operator.write');
+  }
+
+  _persistHelloOk(msg) {
+    const auth = msg?.payload?.auth;
+    if (auth && typeof auth === 'object' && auth.deviceToken) {
+      persistHelloOkDeviceAuth({
+        deviceToken: auth.deviceToken,
+        scopes: Array.isArray(auth.scopes) ? auth.scopes : undefined,
+      });
+    }
+  }
+
+  _finishConnectSuccess(msg) {
+    if (!this._isHelloOkAuthorized(msg)) {
+      gatewayBridgeErrorsTotal.inc();
+      this._recordReject('connect', { code: 'SCOPE_DENIED', message: 'operator.write not granted' });
+      try {
+        this.gatewayWs?.close();
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    this._persistHelloOk(msg);
+    this._gatewayConnected = true;
+    gatewayBridgeGateState.labels('pairing').set(1);
+    gatewayBridgeGateState.labels('scope').set(1);
+    logger.info('single_client_gateway_connected');
+    this._drainQueue();
+  }
+
+  /**
+   * @param {{ omitDevice?: boolean, nonce?: string }} opts
+   */
+  _sendConnectHandshake(opts = {}) {
+    if (!this.gatewayWs || this.gatewayWs.readyState !== 1) return;
+    const omitDevice = Boolean(opts.omitDevice);
+    const nonce = typeof opts.nonce === 'string' ? opts.nonce : '';
+    const id = makeReqId();
+    const params = this._composeConnectParams({ omitDevice, nonce });
+    const frame = {
+      type: 'req',
+      id,
+      method: 'connect',
+      params,
+    };
+    this._connectSent = true;
+    this._pending.set(id, (msg) => {
+      if (msg && msg.ok === true) {
+        this._finishConnectSuccess(msg);
+        return;
+      }
+      const challengeLegacy = this._extractConnectChallenge(msg);
+      if (challengeLegacy && omitDevice) {
+        const n = String(challengeLegacy.nonce || '').trim();
+        if (n) {
+          this._connectNonce = n;
+          this._connectSent = false;
+          this._sendConnectHandshake({ omitDevice: deviceAuthInsecureSkip(), nonce: n });
+          return;
+        }
+      }
+      gatewayBridgeErrorsTotal.inc();
+      this._recordReject('connect', msg?.error ?? msg);
+      logger.error('single_client_gateway_connect_rejected', { id, error: msg?.error });
+      try {
+        this.onError(new Error(`gateway_connect_rejected:${JSON.stringify(msg?.error ?? msg)}`));
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.gatewayWs?.close();
+      } catch {
+        /* ignore */
+      }
+    });
+    try {
+      this.gatewayWs.send(JSON.stringify(frame));
+    } catch (err) {
+      this._connectSent = false;
+      logger.error('single_client_gateway_connect_send_failed', { err: err.message });
+    }
+  }
+
   _connect() {
     if (this._destroyed || this._connecting || this.gatewayWs) return;
     this._connecting = true;
@@ -315,7 +536,7 @@ export class GatewayAgentClient {
 
     this.gatewayWs.on('open', () => {
       this._connecting = false;
-      this._sendConnectHandshake();
+      this._beginHandshakeAfterOpen();
     });
 
     this.gatewayWs.on('message', (data) => {
@@ -325,6 +546,9 @@ export class GatewayAgentClient {
     this.gatewayWs.on('close', () => {
       this._connecting = false;
       this._gatewayConnected = false;
+      this._clearConnectChallengeTimer();
+      this._connectNonce = null;
+      this._connectSent = false;
       this.gatewayWs = null;
       if (!this._destroyed) this._scheduleReconnect();
     });
@@ -345,74 +569,6 @@ export class GatewayAgentClient {
     if (!this.gatewayWs || this.gatewayWs.readyState === 3) this._connect();
   }
 
-  _sendConnectHandshake() {
-    if (!this.gatewayWs || this.gatewayWs.readyState !== 1) return;
-    const id = makeReqId();
-    const params = {
-      minProtocol: Number(process.env.OPENCLAW_BRIDGE_MIN_PROTOCOL || 1),
-      maxProtocol: Number(process.env.OPENCLAW_BRIDGE_MAX_PROTOCOL || 9),
-      client: {
-        id: defaultBridgeClientId(),
-        version: process.env.npm_package_version || '1.0.0',
-        platform: defaultBridgeClientPlatform(),
-        mode: defaultBridgeClientMode(),
-      },
-      role: defaultGatewayRole(),
-      scopes: defaultGatewayScopes(),
-    };
-    if (this.gatewayToken) {
-      params.auth = { token: this.gatewayToken };
-    }
-    const frame = {
-      type: 'req',
-      id,
-      method: 'connect',
-      params,
-    };
-    this._pending.set(id, (msg) => {
-      const challenge = this._extractConnectChallenge(msg);
-      if (challenge) {
-        this._sendConnectChallengeResponse(challenge);
-        return;
-      }
-      if (msg && msg.ok === true) {
-        if (!this._isScopeGrantedOnConnect(msg)) {
-          gatewayBridgeErrorsTotal.inc();
-          this._recordReject('connect', {
-            code: 'SCOPE_DENIED',
-            message: 'operator.write not granted',
-          });
-          try {
-            this.gatewayWs?.close();
-          } catch {
-            /* ignore */
-          }
-          return;
-        }
-        this._gatewayConnected = true;
-        gatewayBridgeGateState.labels('pairing').set(1);
-        gatewayBridgeGateState.labels('scope').set(1);
-        logger.info('single_client_gateway_connected', { id });
-        this._drainQueue();
-      } else {
-        gatewayBridgeErrorsTotal.inc();
-        this._recordReject('connect', msg?.error ?? msg);
-        logger.error('single_client_gateway_connect_rejected', { id, error: msg?.error });
-        try {
-          this.onError(new Error(`gateway_connect_rejected:${JSON.stringify(msg?.error ?? msg)}`));
-        } catch {
-          /* ignore */
-        }
-        try {
-          this.gatewayWs?.close();
-        } catch {
-          /* ignore */
-        }
-      }
-    });
-    this.gatewayWs.send(JSON.stringify(frame));
-  }
-
   /**
    * @param {import('ws').RawData} data
    */
@@ -420,6 +576,10 @@ export class GatewayAgentClient {
     try {
       const raw = data.toString();
       const msg = JSON.parse(raw);
+      if (msg.type === 'event' && msg.event === 'connect.challenge') {
+        this._handleConnectChallengeEvent(msg);
+        return;
+      }
       if (msg.type === 'res' && msg.id) {
         const pending = this._pending.get(msg.id);
         if (pending) {

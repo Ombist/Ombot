@@ -86,8 +86,18 @@ export class MachineRelaySession {
     this._handshakeState = 'unregistered';
     this._pendingRegister = null;
     this._registerChallenge = null;
-    this._requireDeviceAttestation = process.env.OPENCLAW_REQUIRE_DEVICE_ATTESTATION !== '0';
+    this._effectiveRequireAttestation = false;
     this._strictPairingProfile = process.env.OPENCLAW_STRICT_PAIRING_PROFILE !== '0';
+  }
+
+  static parseBoolean(value) {
+    if (value === true || value === false) return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+    }
+    return false;
   }
 
   destroy() {
@@ -343,6 +353,7 @@ export class MachineRelaySession {
     }
     const challengeTtlMs = Number(process.env.OPENCLAW_REGISTER_CHALLENGE_TTL_MS || 60_000);
     const now = Date.now();
+    this._effectiveRequireAttestation = MachineRelaySession.parseBoolean(json.appAttestationEnabled);
     const challenge = {
       nonce: `reg-${now}-${Math.random().toString(36).slice(2, 10)}`,
       issuedAt: now,
@@ -352,7 +363,7 @@ export class MachineRelaySession {
       conversationId: String(json.conversationId || json.chatroomId || 'default').trim(),
       publicKey: String(json.publicKey || '').trim(),
       protocolVersion: this.clientProtocolVersion,
-      requireAttestation: this._requireDeviceAttestation,
+      requireAttestation: this._effectiveRequireAttestation,
       strictPairing: this._strictPairingProfile,
     };
     this._pendingRegister = { ...json };
@@ -362,7 +373,8 @@ export class MachineRelaySession {
       clientId: this.clientId,
       traceId: this.traceId,
       participantId: this.participantId,
-      requireAttestation: this._requireDeviceAttestation,
+      requireAttestation: this._effectiveRequireAttestation,
+      appAttestationEnabled: this._effectiveRequireAttestation,
     });
     return {
       ok: false,
@@ -378,7 +390,7 @@ export class MachineRelaySession {
         publicKey: challenge.publicKey,
         protocolVersion: challenge.protocolVersion,
         strictPairing: true,
-        requireAttestation: this._requireDeviceAttestation,
+        requireAttestation: this._effectiveRequireAttestation,
         payload: registerChallengeSigningPayload(challenge),
       },
     };
@@ -395,7 +407,7 @@ export class MachineRelaySession {
       responseJson: json,
       challenge: this._registerChallenge,
       verifyPublicKey: this.clientVerifyPublicKey,
-      requireAttestation: this._requireDeviceAttestation,
+      requireAttestation: this._effectiveRequireAttestation,
     });
     if (!result.ok) {
       writeAuditEvent('register_challenge_rejected', {

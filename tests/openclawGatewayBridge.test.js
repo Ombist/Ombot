@@ -1,5 +1,9 @@
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { WebSocketServer } from 'ws';
+import { buildConnectDeviceBlock, loadOrCreateDeviceIdentity } from '../gatewayDeviceIdentity.js';
 import {
   assistantTextToPhoneRes,
   extractAssistantTextFromGateway,
@@ -139,34 +143,48 @@ describe('mock gateway server handshake', () => {
     await new Promise((r) => wss.close(r));
   });
 
-  it('supports strict connect challenge round-trip', async () => {
+  it('event connect.challenge then connect carries signed device (protocol v4)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ombot-bridge-proto-'));
+    vi.stubEnv('OPENCLAW_DATA_DIR', dir);
+    vi.stubEnv('OPENCLAW_GATEWAY_DEVICE_STATE_PATH', path.join(dir, 'device.json'));
+    vi.stubEnv('OPENCLAW_GATEWAY_LEGACY_BLIND_CONNECT', '');
+    vi.stubEnv('OPENCLAW_GATEWAY_DEVICE_INSECURE_SKIP', '');
+
+    const nonce = 'event-challenge-nonce';
     const wss = new WebSocketServer({ port: 0 });
     await new Promise((r) => wss.on('listening', r));
     const addr = wss.address();
     const port = typeof addr === 'object' && addr ? addr.port : 0;
 
     wss.on('connection', (ws) => {
+      // Defer so the client can attach `message` listeners after `open`.
+      setImmediate(() => {
+        ws.send(
+          JSON.stringify({
+            type: 'event',
+            event: 'connect.challenge',
+            payload: { nonce },
+          })
+        );
+      });
       ws.on('message', (data) => {
         const msg = JSON.parse(data.toString());
         if (msg.type === 'req' && msg.method === 'connect') {
-          ws.send(
-            JSON.stringify({
-              type: 'res',
-              id: msg.id,
-              ok: false,
-              error: { code: 'CHALLENGE_REQUIRED', details: { challenge: { nonce: 'n-1' } } },
-            })
-          );
-          return;
-        }
-        if (msg.type === 'req' && msg.method === 'connect.challenge') {
-          expect(msg.params.nonce).toBe('n-1');
+          expect(msg.params.device).toBeTruthy();
+          expect(msg.params.device.nonce).toBe(nonce);
+          expect(msg.params.minProtocol).toBe(4);
           ws.send(
             JSON.stringify({
               type: 'res',
               id: msg.id,
               ok: true,
-              payload: { grantedScopes: ['operator.read', 'operator.write'] },
+              payload: {
+                grantedScopes: ['operator.read', 'operator.write'],
+                auth: {
+                  deviceToken: 'persist-me',
+                  scopes: ['operator.read', 'operator.write'],
+                },
+              },
             })
           );
         }
@@ -175,43 +193,63 @@ describe('mock gateway server handshake', () => {
 
     const { WebSocket } = await import('ws');
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    /** @type {object[]} */
+    const inbox = [];
+    ws.on('message', (d) => {
+      inbox.push(JSON.parse(d.toString()));
+    });
     await new Promise((resolve, reject) => {
       ws.on('open', resolve);
       ws.on('error', reject);
     });
 
-    const nextJson = () =>
-      new Promise((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('timeout')), 2000);
-        ws.once('message', (d) => {
-          clearTimeout(t);
-          resolve(JSON.parse(d.toString()));
-        });
-      });
+    await vi.waitUntil(() => inbox.length >= 1, { timeout: 5000 });
+    const challengeEv = inbox.shift();
+    expect(challengeEv.type).toBe('event');
+    expect(challengeEv.event).toBe('connect.challenge');
+    expect(challengeEv.payload.nonce).toBe(nonce);
+
+    const identity = loadOrCreateDeviceIdentity();
+    const scopes = ['operator.read', 'operator.write', 'operator.admin'];
+    const device = buildConnectDeviceBlock({
+      identity,
+      nonce,
+      scopes,
+      role: 'operator',
+      clientId: 'openclaw',
+      clientMode: 'service',
+      platform: 'linux',
+      signatureToken: '',
+    });
 
     ws.send(
       JSON.stringify({
         type: 'req',
-        id: 'c-1',
+        id: 'c-proto',
         method: 'connect',
-        params: { role: 'operator', scopes: ['operator.read', 'operator.write'] },
+        params: {
+          minProtocol: 4,
+          maxProtocol: 9,
+          client: {
+            id: 'openclaw',
+            version: '1.0.0',
+            platform: 'linux',
+            mode: 'service',
+          },
+          role: 'operator',
+          scopes,
+          caps: [],
+          commands: [],
+          permissions: {},
+          device,
+        },
       })
     );
-    const first = await nextJson();
-    expect(first.ok).toBe(false);
-    expect(first.error.code).toBe('CHALLENGE_REQUIRED');
 
-    ws.send(
-      JSON.stringify({
-        type: 'req',
-        id: 'cc-1',
-        method: 'connect.challenge',
-        params: { nonce: 'n-1', timestamp: Date.now(), response: { mode: 'service' } },
-      })
-    );
-    const second = await nextJson();
-    expect(second.ok).toBe(true);
-    expect(second.payload.grantedScopes).toContain('operator.write');
+    await vi.waitUntil(() => inbox.length >= 1, { timeout: 5000 });
+    const res = inbox.shift();
+    expect(res.ok).toBe(true);
+    expect(res.payload.auth.deviceToken).toBe('persist-me');
 
     ws.close();
     await new Promise((r) => wss.close(r));

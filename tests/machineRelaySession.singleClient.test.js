@@ -109,15 +109,73 @@ describe('MachineRelaySession single-client mode', () => {
       protocolVersion: 2,
       capabilities: ['signature', 'replay_guard'],
       agentId: 'agent-a',
+      appAttestationEnabled: true,
     };
     const prep = session.validateAndPrepareRegister(registerPayload);
     expect(prep.ok).toBe(false);
+    expect(prep.response.requireAttestation).toBe(true);
     session.notifyClientJson(prep.response);
     completeStrictRegister(session, sent);
     expect(sent.some((x) => x.type === 'registered')).toBe(true);
     const peer = sent.find((x) => x.type === 'peer_public_key');
     expect(peer?.publicKey).toBeTruthy();
     expect(session.singleClientAgentId).toBe('agent-a');
+    session.destroy();
+  });
+
+  it('attestation disabled accepts challenge response without attestation', () => {
+    const sent = [];
+    const clientWs = {
+      readyState: 1,
+      send(s) {
+        sent.push(JSON.parse(s));
+      },
+    };
+    const session = new MachineRelaySession({
+      clientId: 't1-off',
+      clientWs,
+      keyPair,
+      bridgeMode: false,
+      config: baseConfig(),
+    });
+    const registerPayload = {
+      type: 'register_public_key',
+      publicKey: clientPk,
+      boxPublicKey: publicKeyToBase64(clientBox.publicKey),
+      conversationId: 'c1-off',
+      participantId: 'p1',
+      traceId: 'tr-off',
+      protocolVersion: 2,
+      capabilities: ['signature', 'replay_guard'],
+      agentId: 'agent-a',
+      appAttestationEnabled: false,
+    };
+    const prep = session.validateAndPrepareRegister(registerPayload);
+    expect(prep.ok).toBe(false);
+    expect(prep.response.requireAttestation).toBe(false);
+    session.notifyClientJson(prep.response);
+
+    const challenge = sent.find((x) => x.type === 'challenge');
+    expect(challenge).toBeTruthy();
+    const timestamp = challenge.issuedAt + 1;
+    const body = `${registerChallengeSigningPayload({
+      nonce: challenge.nonce,
+      issuedAt: challenge.issuedAt,
+      expiresAt: challenge.expiresAt,
+      traceId: challenge.traceId,
+      participantId: challenge.participantId,
+      conversationId: challenge.conversationId,
+      publicKey: challenge.publicKey,
+      protocolVersion: challenge.protocolVersion,
+    })}|${timestamp}`;
+    const sigHex = sign(hexToBytes(clientSk), body);
+    const res = session.handleRegisterChallengeResponse({
+      type: 'register_challenge_response',
+      nonce: challenge.nonce,
+      timestamp,
+      signature: sigHex,
+    });
+    expect(res.ok).toBe(true);
     session.destroy();
   });
 
@@ -179,6 +237,8 @@ describe('MachineRelaySession single-client mode', () => {
     });
 
     vi.stubEnv('OPENCLAW_GATEWAY_URL', gwUrl);
+    // Mock gateway does not emit `event: connect.challenge`; use blind-first connect.
+    vi.stubEnv('OPENCLAW_GATEWAY_LEGACY_BLIND_CONNECT', '1');
 
     const sent = [];
     const clientWs = {

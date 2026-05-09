@@ -166,7 +166,9 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_REQUIRE_MIDDLEWARE_T
 2. 在 `/etc/ombot/ombot.env`（或 systemd `Environment=`）設定 **`OPENCLAW_GATEWAY_BRIDGE=1`**，並設定與手機端對話一致的 **`OPENCLAW_BRIDGE_AGENT_ID`**、`**OPENCLAW_BRIDGE_CONVERSATION_ID**`、`**OPENCLAW_BRIDGE_PARTICIPANT_ID**`（須與 App 內該對話的 `agentId` / `conversationId` / `participantId` 一致，否則 `sessionKey` 不同無法配對 Ombers）。
 3. 若 Gateway 啟用 token，設定 **`OPENCLAW_GATEWAY_TOKEN`**（與 `openclaw.json` / Gateway 設定一致）。
 
-行為摘要：Ombot 以 bridge 模式連上 Middleware；Phone 完成 box 握手後，解密得到的 `type: "req"` / `method: "agent"` / `params.message` 會轉成 Gateway 的 `req`（預設 `method` 為 `agent`，可由 `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` 覆寫）；每輪會帶 **`idempotencyKey`**、**`agentId`**（固定為 **`OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID`**；未設時等同 **`OPENCLAW_BRIDGE_AGENT_ID`**，預設 `default`）與 **`scopes`**（為相容部分 Gateway 版本，`agent` 請求也會附帶 scopes，不只 `connect`）。`connect` 會送 **`scopes`**，可經 `OPENCLAW_BRIDGE_OPERATOR_SCOPES` 覆寫為 JSON 陣列。預先於 `openclaw.json` 的 **`agents.list`** 為各 `agentId` 設定 model，無需在請求內覆寫 `provider`/`model`。Gateway 回傳的 `res` / `event` 會盡力抽出文字再以 `type: "res"` 加密回 Phone。**OpenClaw Gateway 協定版本差異**時請對照官方文件並鎖定 `openclaw` 版本；`connect.challenge` / device pairing 等進階流程可能需後續擴充。
+行為摘要：Ombot 以 bridge 模式連上 Middleware；Phone 完成 box 握手後，解密得到的 `type: "req"` / `method: "agent"` / `params.message` 會轉成 Gateway 的 `req`（預設 `method` 為 `agent`，可由 `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` 覆寫）；每輪會帶 **`idempotencyKey`**、**`agentId`**（固定為 **`OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID`**；未設時等同 **`OPENCLAW_BRIDGE_AGENT_ID`**，預設 `default`）與 **`scopes`**（為相容部分 Gateway 版本，`agent` 請求也會附帶 scopes，不只 `connect`）。`connect` 會送 **`scopes`**，可經 `OPENCLAW_BRIDGE_OPERATOR_SCOPES` 覆寫為 JSON 陣列。預先於 `openclaw.json` 的 **`agents.list`** 為各 `agentId` 設定 model，無需在請求內覆寫 `provider`/`model`。Gateway 回傳的 `res` / `event` 會盡力抽出文字再以 `type: "res"` 加密回 Phone。
+
+**Gateway WebSocket 裝置身分（與 [官方協定](https://openclaw.cc/gateway/protocol) 對齊）**：連線開啟後會先等候 **`event: connect.challenge`**（nonce）；再以 **`connect.params.device`**（Ed25519、`v3` 簽名字串）完成握手。若 Gateway 只會在第一次 **`connect` 錯誤**裡回 nonce、而不發 event，可設 **`OPENCLAW_GATEWAY_LEGACY_BLIND_CONNECT=1`**。成功後若 **`hello-ok`** 含 **`auth.deviceToken`**，會與金鑰一併寫入 **`${OPENCLAW_DATA_DIR}/ombot-gateway-device.json`**（可用 **`OPENCLAW_GATEWAY_DEVICE_STATE_PATH`** 覆寫）。簽名演算法與 payload 欄位順序須與部署中的 **OpenClaw Gateway 版本**一致（見程式 `gatewayDeviceIdentity.js` 註解之上游路徑）。除錯可用 **`OPENCLAW_GATEWAY_DEVICE_INSECURE_SKIP=1`** 略過 `device`（Gateway 須允許不安全 Control UI／對應設定；**預設關閉**）。單一機上的 **`OPENCLAW_GATEWAY_TOKEN`** 與持久化的 **`deviceToken`** 會一併用於簽名時的 token 欄位（依協定）。預設 **`OPENCLAW_BRIDGE_MIN_PROTOCOL=4`**（可用環境變數覆寫）。
 
 Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_total`、`ombot_gateway_bridge_phone_to_gateway_total`、`ombot_gateway_bridge_gateway_to_phone_total`、`ombot_gateway_bridge_reject_total{phase,category,reason}`、`ombot_gateway_bridge_gate_state{gate}`、`ombot_gateway_bridge_fallback_total{source,reason}`。
 
@@ -200,18 +202,22 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_ALLOW_LEGACY_PROTOCOL` | `0` | Whether clients below server protocol are allowed |
 | `OPENCLAW_REQUIRED_CAPABILITIES` | `signature,replay_guard` | Comma-separated client capabilities required at register time |
 | `OPENCLAW_STRICT_PAIRING_PROFILE` | `1` | Fail-close pairing profile; unsupported message/challenge paths are rejected |
-| `OPENCLAW_REQUIRE_DEVICE_ATTESTATION` | `1` | Require `register_challenge_response.attestation` fields to pass registration |
+| `OPENCLAW_REQUIRE_DEVICE_ATTESTATION` | `1` | Legacy knob. Registration attestation requirement is now driven by client `register_public_key.appAttestationEnabled` (machine-level switch) |
 | `OPENCLAW_REGISTER_CHALLENGE_TTL_MS` | `60000` | Registration challenge validity window |
 | `OPENCLAW_ALLOW_UNVERIFIED_ATTESTATION` | `0` | Debug-only escape hatch: allow attestation without `verdict=ok` |
 | `OPENCLAW_GATEWAY_BRIDGE` | (unset / off) | Set `1` or `true` to enable in-process OpenClaw Gateway WebSocket client bridge |
 | `OPENCLAW_GATEWAY_URL` | `ws://127.0.0.1:18789` | Gateway WebSocket URL for the bridge |
 | `OPENCLAW_GATEWAY_TOKEN` | auto-generated at provision if unset | Sent as `connect.params.auth.token`; provision also sets `gateway.auth.mode=token` |
+| `OPENCLAW_GATEWAY_DEVICE_STATE_PATH` | (empty → `$OPENCLAW_DATA_DIR/ombot-gateway-device.json`) | Ed25519 device keys + optional persisted `deviceToken` / `storedScopes` from `hello-ok` |
+| `OPENCLAW_GATEWAY_DEVICE_INSECURE_SKIP` | `0` | Set `1`/`true` to omit `device` on `connect` (debug; Gateway must allow insecure device auth) |
+| `OPENCLAW_GATEWAY_CONNECT_CHALLENGE_TIMEOUT_MS` | `15000` | Close connection if no `connect.challenge` event arrives in time (unless legacy blind connect is enabled) |
+| `OPENCLAW_GATEWAY_LEGACY_BLIND_CONNECT` | `0` | Set `1` if Gateway does not emit challenge events and only returns a nonce in the first `connect` error payload |
 | `OPENCLAW_BRIDGE_AGENT_ID` | `default` | Must match Phone conversation `agentId` for sessionKey |
 | `OPENCLAW_BRIDGE_CONVERSATION_ID` | `default` | Must match Phone `conversationId` |
 | `OPENCLAW_BRIDGE_PARTICIPANT_ID` | `default` | Must match Phone `participantId` |
 | `OPENCLAW_BRIDGE_PHONE_METHOD` | `agent` | Phone `req.method` that carries user text |
 | `OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD` | `agent` | Gateway `req.method` for a model turn |
-| `OPENCLAW_BRIDGE_MIN_PROTOCOL` / `MAX_PROTOCOL` | `1` / `9` | Passed in `connect` params |
+| `OPENCLAW_BRIDGE_MIN_PROTOCOL` / `MAX_PROTOCOL` | `4` / `9` | Passed in `connect` params (`min` defaults to **4** for device-auth capable gateways) |
 | `OPENCLAW_BRIDGE_ROLE` | `operator` | `connect.params.role`；為相容較嚴格的 Gateway，若設成 `admin` 會在程式內自動降為 `operator` |
 | `OPENCLAW_BRIDGE_CLIENT_ID` | `openclaw` | `connect.params.client.id`（新版 Gateway 可能限制 allowed values） |
 | `OPENCLAW_BRIDGE_CLIENT_PLATFORM` | auto (`linux`/`darwin`/`windows`) | `connect.params.client.platform` |
@@ -228,9 +234,10 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 ## Protocol
 
 - Listens on `0.0.0.0:PORT/ws`.
-- **App 直連（本地 OpenClaw）**：送 `{ type: 'register_public_key', publicKey: '<hex>', protocolVersion, capabilities }`；server 回 `{ type: 'registered', serverPublicKey: '<hex>', protocolVersion, capabilities }`。
+- **App 直連（本地 OpenClaw）**：送 `{ type: 'register_public_key', publicKey: '<hex>', protocolVersion, capabilities, appAttestationEnabled }`；server 回 `{ type: 'registered', serverPublicKey: '<hex>', protocolVersion, capabilities }`。
 - **經 Middleware（Phone E2E）**：Phone 與 Machine 須連到同一 **Middleware session**（URL `…/ws/<sessionKey>`，`sessionKey` 由 `agentId` + `conversationId` 算出；若帶 `participantId`，則改為三元組計算）。本地 OpenClaw 客戶端在 `register_public_key` 應帶 **`conversationId`**（及選填 `agentId`、`participantId`），Machine 才能連上對應 tunnel。Phone 送 `register_public_key` 含 `boxPublicKey` 等；Machine 回 `peer_public_key`；之後訊息以 `encrypted` 格式加解密。若客戶端未帶 `conversationId`／`chatroomId`，Machine 仍連 **legacy** `…/ws`（單對單）。
 - App 送 `{ type: 'req', id, method: 'agent', protocolVersion, capabilities, params: { message, clientMessageId }, timestamp, nonce, signature }`；server 驗證後轉發。
+- `register_public_key.appAttestationEnabled` 為機器層級開關：`true` 時 challenge 會回 `requireAttestation: true` 並要求 `register_challenge_response.attestation`；`false`（或未帶）時雙方跳過 attestation。
 
 ## CI Quality Gates and Merge Policy
 

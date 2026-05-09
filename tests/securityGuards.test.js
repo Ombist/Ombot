@@ -193,4 +193,34 @@ describe('security guards', () => {
     });
     expect(ok.ok).toBe(true);
   });
+
+  it('allows register challenge response without attestation when not required', () => {
+    const kp = generateKeyPairFromSeed('reg-ch-seed-no-att');
+    const now = Date.now();
+    const challenge = {
+      nonce: 'reg-nonce-no-att',
+      issuedAt: now - 1000,
+      expiresAt: now + 30_000,
+      traceId: 'tr-2',
+      participantId: 'ios-b',
+      conversationId: 'conv-b',
+      publicKey: kp.publicKeyHex,
+      protocolVersion: 2,
+    };
+    const ts = now;
+    const signingBody = `${registerChallengeSigningPayload(challenge)}|${ts}`;
+    const response = {
+      nonce: challenge.nonce,
+      timestamp: ts,
+      signature: sign(kp.secretKey, signingBody),
+    };
+    const ok = validateRegisterChallengeResponse({
+      responseJson: response,
+      challenge,
+      verifyPublicKey: kp.publicKey,
+      requireAttestation: false,
+      nowMs: now,
+    });
+    expect(ok.ok).toBe(true);
+  });
 });
