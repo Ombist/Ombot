@@ -119,6 +119,12 @@ function gatewayProtocolVersions() {
   };
 }
 
+/** See `gatewayAgentClient.js` — strict Gateways reject `scopes` on `agent` params unless opted in. */
+function bridgeAgentParamsIncludeScopes() {
+  const v = String(process.env.OPENCLAW_BRIDGE_AGENT_INCLUDE_SCOPES || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
 function connectChallengeTimeoutMs() {
   const raw = Number(process.env.OPENCLAW_GATEWAY_CONNECT_CHALLENGE_TIMEOUT_MS ?? 15_000);
   return Number.isFinite(raw) && raw > 0 ? raw : 15_000;
@@ -746,17 +752,19 @@ export class OpenClawGatewayBridge {
         return;
       }
       const id = makeReqId();
+      const params = {
+        message: userText,
+        idempotencyKey: id,
+        agentId: this.defaultGatewayAgentId,
+      };
+      if (bridgeAgentParamsIncludeScopes()) {
+        params.scopes = defaultGatewayBridgeScopes();
+      }
       const frame = {
         type: 'req',
         id,
         method: this.agentMethod,
-        params: {
-          message: userText,
-          idempotencyKey: id,
-          agentId: this.defaultGatewayAgentId,
-          // Some gateway builds validate scopes again on each agent request.
-          scopes: defaultGatewayBridgeScopes(),
-        },
+        params,
       };
       const timeout = setTimeout(() => {
         if (this._pending.has(id)) {

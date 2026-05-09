@@ -135,6 +135,12 @@ function gatewayProtocolVersions() {
   };
 }
 
+/** Newer OpenClaw Gateways reject `agent.params.scopes` (strict schema); set `OPENCLAW_BRIDGE_AGENT_INCLUDE_SCOPES=1` for legacy builds that re-validate scopes per turn. */
+function bridgeAgentParamsIncludeScopes() {
+  const v = String(process.env.OPENCLAW_BRIDGE_AGENT_INCLUDE_SCOPES || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
 function connectChallengeTimeoutMs() {
   const raw = Number(process.env.OPENCLAW_GATEWAY_CONNECT_CHALLENGE_TIMEOUT_MS ?? 15_000);
   return Number.isFinite(raw) && raw > 0 ? raw : 15_000;
@@ -643,17 +649,19 @@ export class GatewayAgentClient {
         return;
       }
       const id = makeReqId();
+      const params = {
+        message: userText,
+        idempotencyKey: id,
+        agentId,
+      };
+      if (bridgeAgentParamsIncludeScopes()) {
+        params.scopes = defaultGatewayScopes();
+      }
       const frame = {
         type: 'req',
         id,
         method: this.agentMethod,
-        params: {
-          message: userText,
-          idempotencyKey: id,
-          agentId,
-          // Some gateway builds validate scopes again on each agent request.
-          scopes: defaultGatewayScopes(),
-        },
+        params,
       };
       const timeout = setTimeout(() => {
         if (this._pending.has(id)) {
