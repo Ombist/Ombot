@@ -94,7 +94,8 @@ function defaultBridgeClientPlatform() {
 
 function defaultBridgeClientMode() {
   const raw = (process.env.OPENCLAW_BRIDGE_CLIENT_MODE || '').trim().toLowerCase();
-  return raw || 'operator';
+  // See OpenClaw `src/gateway/protocol/client-info.ts` — `client.mode` is not `connect.params.role`.
+  return raw || 'cli';
 }
 
 function defaultBridgeClientId() {

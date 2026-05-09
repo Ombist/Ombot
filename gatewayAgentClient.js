@@ -107,9 +107,9 @@ function defaultBridgeClientPlatform() {
 
 function defaultBridgeClientMode() {
   const raw = (process.env.OPENCLAW_BRIDGE_CLIENT_MODE || '').trim().toLowerCase();
-  // OpenClaw Gateway schema expects documented operator baseline (`cli` + `operator`);
-  // legacy `service` / `openclaw` fail INVALID_REQUEST on current gateways.
-  return raw || 'operator';
+  // OpenClaw `GatewayClientModeSchema` allows only:
+  // webchat | cli | ui | backend | node | probe | test — not role names like `operator` or legacy `service`.
+  return raw || 'cli';
 }
 
 function defaultBridgeClientId() {

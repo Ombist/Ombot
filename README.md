@@ -221,7 +221,7 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_BRIDGE_ROLE` | `operator` | `connect.params.role`；為相容較嚴格的 Gateway，若設成 `admin` 會在程式內自動降為 `operator` |
 | `OPENCLAW_BRIDGE_CLIENT_ID` | `cli` | `connect.params.client.id`（須符合 Gateway schema；舊版曾用 `openclaw`） |
 | `OPENCLAW_BRIDGE_CLIENT_PLATFORM` | auto (`linux`/`darwin`/`windows`) | `connect.params.client.platform` |
-| `OPENCLAW_BRIDGE_CLIENT_MODE` | `operator` | `connect.params.client.mode`（舊預設 `service` 會被新版 Gateway 拒絕） |
+| `OPENCLAW_BRIDGE_CLIENT_MODE` | `cli` | `connect.params.client.mode`（僅能為 `webchat`/`cli`/`ui`/`backend`/`node`/`probe`/`test`；勿與 `role=operator` 混淆） |
 | `OPENCLAW_BRIDGE_OPERATOR_SCOPES` | (empty → `["operator.read","operator.write"]`) | JSON array of operator scopes on `connect`；`operater.*` 會自動正規化為 `operator.*`。無論此變數如何設定，程式都會強制補齊 `operator.read`、`operator.write` 以避免 `missing scope` 類型錯誤。另相容 systemd `EnvironmentFile` 常見格式：`[operator.read,operator.write]`（無引號） |
 | `OPENCLAW_BRIDGE_AUTO_FALLBACK` | `0` | Set `1` to enable provider-direct fallback when gateway path is rejected/unavailable (ignored when strict pairing profile is enabled) |
 | `OPENCLAW_FALLBACK_OPENAI_MODEL` | `gpt-4.1-mini` | Model for fallback provider route (`OPENAI_API_KEY` required) |
