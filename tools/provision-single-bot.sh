@@ -6,6 +6,7 @@
 #   OMBIST_WSS_PORT        — Nginx TLS listen port (e.g. 443 or 8443)
 #   OPENCLAW_MACHINE_SEED  — required
 # Optional: OMBOT_PORT (default 8082), OMBOT_HEALTH_PORT, OMBOT_GIT_URL, OMBROUTER_GIT_URL, OPENCLAW_GATEWAY_PORT, etc.
+# Optional: OMBIST_GATEWAY_AGENT_ID (default default), OMBIST_GATEWAY_AGENT_MODEL (default gpt-4o-mini) — auto-merge into openclaw.json agents.list + ombot.env bridge ids.
 
 set -euo pipefail
 
@@ -335,6 +336,14 @@ openclaw config set gateway.auth.token '${OPENCLAW_GATEWAY_TOKEN}'" || {
   echo "ombist-provision-single-bot: warning: openclaw config set gateway.mode local failed (gateway may stay on status=78/CONFIG)" >&2
 }
 
+OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID:-default}"
+OMBIST_GATEWAY_AGENT_MODEL="${OMBIST_GATEWAY_AGENT_MODEL:-gpt-4o-mini}"
+echo "ombist-provision-single-bot: ensuring OpenClaw agents.list id=${OMBIST_GATEWAY_AGENT_ID} (model=${OMBIST_GATEWAY_AGENT_MODEL})..."
+run_as_ombot "export OMBIST_GATEWAY_AGENT_ID='${OMBIST_GATEWAY_AGENT_ID}' OMBIST_GATEWAY_AGENT_MODEL='${OMBIST_GATEWAY_AGENT_MODEL}' OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}' OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}' && node '${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs'"
+as_root cp "${OPENCLAW_RUNTIME_CONFIG_PATH}" "${OPENCLAW_CONFIG_PATH}"
+as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
+as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
+
 {
   echo "PORT=${OMBOT_PORT}"
   echo "HEALTH_PORT=${OMBOT_HEALTH_PORT}"
@@ -345,6 +354,8 @@ openclaw config set gateway.auth.token '${OPENCLAW_GATEWAY_TOKEN}'" || {
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
   echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
   echo 'OPENCLAW_BRIDGE_OPERATOR_SCOPES=["operator.read","operator.write","operator.admin"]'
+  echo "OPENCLAW_BRIDGE_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
+  echo "OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
   fi

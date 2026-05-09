@@ -149,7 +149,7 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_REQUIRE_MIDDLEWARE_T
 
 [tools/provision-headless.sh](tools/provision-headless.sh) 供 Ombist iOS「新增機器」經 SSH 在非互動環境安裝 **nvm + Node 22**、`openclaw@latest`、clone 本 repo，並切到 **system-level + ombot service user**：
 
-- OpenClaw 設定寫入 `/etc/ombot/openclaw.json`（`gateway.bind: loopback`，僅 `127.0.0.1:18789`）。
+- OpenClaw 設定寫入 `/etc/ombot/openclaw.json`（`gateway.bind: loopback`，僅 `127.0.0.1:18789`）。**單機／headless 佈署腳本**會執行 `tools/ensure-openclaw-gateway-agent.mjs`，自動在 `openclaw.json` 補上 **`agents.list`**（預設 id `default`，可覆寫 `OMBIST_GATEWAY_AGENT_ID`），並在 `ombot.env` 寫入 **`OPENCLAW_BRIDGE_AGENT_ID`**，無需登入伺服器查 `agents.list`。
 - Ombot 環境寫入 `/etc/ombot/ombot.env`。
 - 建立 `systemd` 單元：`ombist-openclaw-gateway.service`、`ombist-ombot.service`（皆以 `User=ombot` 執行）。
 - 嘗試啟用主機防火牆（`ufw` / `iptables` / `nft`）封鎖外部入站 `tcp/18789`；若缺少工具，摘要會回 `warning=firewall_tool_missing`（降級安全模式）。
