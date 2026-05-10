@@ -5,6 +5,8 @@
 ombist_cmd_preflight_main() {
   # shellcheck disable=SC1091
   set +e
+  # Non-login SSH often has a minimal PATH; align with typical Linux installs.
+  export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
   OS_UNAME="$(uname -s 2>/dev/null || echo unknown)"
   OS_ID="unknown"
   if [ "$OS_UNAME" = "Linux" ] && [ -r /etc/os-release ]; then
@@ -24,8 +26,23 @@ ombist_cmd_preflight_main() {
   if command -v git >/dev/null 2>&1; then HAS_GIT=1; else HAS_GIT=0; fi
   if command -v curl >/dev/null 2>&1; then HAS_CURL=1; else HAS_CURL=0; fi
   if command -v wget >/dev/null 2>&1; then HAS_WGET=1; else HAS_WGET=0; fi
-  if command -v node >/dev/null 2>&1; then HAS_NODE=1; else HAS_NODE=0; fi
-  if command -v npm >/dev/null 2>&1; then HAS_NPM=1; else HAS_NPM=0; fi
+  ombist_has_node() {
+    if command -v node >/dev/null 2>&1 && node -e 'process.exit(0)' >/dev/null 2>&1; then return 0; fi
+    if command -v nodejs >/dev/null 2>&1 && nodejs -e 'process.exit(0)' >/dev/null 2>&1; then return 0; fi
+    for cand in /usr/local/bin/node /usr/bin/node /usr/bin/nodejs /opt/ombot/npm-global/bin/node; do
+      [ -x "$cand" ] && "$cand" -e 'process.exit(0)' >/dev/null 2>&1 && return 0
+    done
+    return 1
+  }
+  ombist_has_npm() {
+    if command -v npm >/dev/null 2>&1; then return 0; fi
+    for cand in /usr/local/bin/npm /usr/bin/npm /opt/ombot/npm-global/bin/npm; do
+      [ -x "$cand" ] && return 0
+    done
+    return 1
+  }
+  if ombist_has_node; then HAS_NODE=1; else HAS_NODE=0; fi
+  if ombist_has_npm; then HAS_NPM=1; else HAS_NPM=0; fi
   if command -v systemctl >/dev/null 2>&1; then HAS_SYSTEMCTL=1; else HAS_SYSTEMCTL=0; fi
   if command -v openssl >/dev/null 2>&1; then HAS_OPENSSL=1; else HAS_OPENSSL=0; fi
   GITHUB_OK=-1
