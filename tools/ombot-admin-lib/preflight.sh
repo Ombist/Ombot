@@ -6,7 +6,7 @@ ombist_cmd_preflight_main() {
   # shellcheck disable=SC1091
   set +e
   # Non-login SSH often has a minimal PATH; align with typical Linux installs.
-  export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+  export PATH="/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
   OS_UNAME="$(uname -s 2>/dev/null || echo unknown)"
   OS_ID="unknown"
   if [ "$OS_UNAME" = "Linux" ] && [ -r /etc/os-release ]; then
@@ -29,14 +29,14 @@ ombist_cmd_preflight_main() {
   ombist_has_node() {
     if command -v node >/dev/null 2>&1 && node -e 'process.exit(0)' >/dev/null 2>&1; then return 0; fi
     if command -v nodejs >/dev/null 2>&1 && nodejs -e 'process.exit(0)' >/dev/null 2>&1; then return 0; fi
-    for cand in /usr/local/bin/node /usr/bin/node /usr/bin/nodejs /opt/ombot/npm-global/bin/node; do
+    for cand in /snap/bin/node /usr/local/bin/node /usr/bin/node /usr/bin/nodejs /opt/ombot/npm-global/bin/node; do
       [ -x "$cand" ] && "$cand" -e 'process.exit(0)' >/dev/null 2>&1 && return 0
     done
     return 1
   }
   ombist_has_npm() {
     if command -v npm >/dev/null 2>&1; then return 0; fi
-    for cand in /usr/local/bin/npm /usr/bin/npm /opt/ombot/npm-global/bin/npm; do
+    for cand in /snap/bin/npm /usr/local/bin/npm /usr/bin/npm /opt/ombot/npm-global/bin/npm; do
       [ -x "$cand" ] && return 0
     done
     return 1
