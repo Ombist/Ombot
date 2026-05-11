@@ -391,6 +391,10 @@ set -euo pipefail
 export NPM_CONFIG_PREFIX="${NPM_PREFIX}"
 export PATH="\${NPM_CONFIG_PREFIX}/bin:\${PATH}"
 export OPENCLAW_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH}"
+export HOME="${OMBOT_HOME:-/home/${OMBOT_USER}}"
+if [[ "\${HOME}" != /* ]]; then
+  export HOME="/\${HOME#./}"
+fi
 exec openclaw gateway --port ${OPENCLAW_GATEWAY_PORT}
 EOF
 as_root chown root:"${OMBOT_GROUP}" "${WRAPPER_GW}"

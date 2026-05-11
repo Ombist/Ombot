@@ -43,6 +43,8 @@ die() {
 . "${LIB}/route-sync.sh"
 # shellcheck source=/dev/null
 . "${LIB}/gateway-stability.sh"
+# shellcheck source=/dev/null
+. "${LIB}/openai-env.sh"
 
 usage() {
   cat <<'EOF'
@@ -53,6 +55,7 @@ Usage:
   ombot-admin tls show [--json]
   ombot-admin systemctl monitor [--json]
   ombot-admin route sync [--json]
+  ombot-admin openai env apply [--json]
   ombot-admin ombrouter probe [--json]
   ombot-admin ombrouter install [--pinned-ref <sha>] [--json]
   ombot-admin ombot health-port ensure-internal [--json]
@@ -63,7 +66,7 @@ EOF
 }
 
 cmd_version() {
-  local caps='["tls","preflight","systemctl","route_sync","ombrouter","ombrouter_probe","health_port","openclaw_config"]'
+  local caps='["tls","preflight","systemctl","route_sync","ombrouter","ombrouter_probe","health_port","openclaw_config","openai_env"]'
   local data
   data="$(printf '{"version":%s,"capabilities":%s}' "$(ombist_json_escape_string "${OMBOT_ADMIN_VERSION}")" "${caps}")"
   ombist_emit_envelope true "version" "ombot-admin ${OMBOT_ADMIN_VERSION}" "${data}" "[]" "[]"
@@ -208,6 +211,10 @@ main() {
     route)
       [[ "${args[1]:-}" == "sync" ]] || die "route only supports sync"
       ombist_cmd_route_sync_main
+      ;;
+    openai)
+      [[ "${args[1]:-}" == "env" && "${args[2]:-}" == "apply" ]] || die "openai only supports env apply"
+      ombist_cmd_openai_env_apply_main
       ;;
     ombrouter)
       [[ ${#args[@]} -ge 2 ]] || die "ombrouter needs subcommand"

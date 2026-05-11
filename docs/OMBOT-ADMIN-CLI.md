@@ -35,6 +35,7 @@ On failure: `ok: false` and `errors: [{ "code": "NO_SUDO", "message": "..." }]`.
 | `ombot-admin tls show --json` | Inspect current server cert / SAN |
 | `ombot-admin systemctl monitor --json` | Two services: for each role, prefers **`ombist-ombot.service` / `ombist-openclaw-gateway.service`** when the matching file exists under **`/etc/systemd/system/`** (Ombist_IOS provision layout), else if `systemctl cat <unit>` succeeds, else falls back to **`ombot.service` / `openclaw-gateway@Ombist_IOS.service`** (manual/README install). `--no-pager` on `systemctl` calls. Same JSON shape as before. |
 | `ombot-admin route sync --json` | Apply route payloads from env (`SYNC_OPENCLAW_PATCH_B64`, optional `SYNC_COST_CONFIG_JSON_B64` + `SYNC_COST_CONFIG_PATH`, optional `SYNC_OPENCLAW_AUTH_B64`) and restart gateway unit when present |
+| `ombot-admin openai env apply --json` | Apply `OPENAI_API_KEY` / `OPENAI_BASE_URL` into `/etc/ombot/ombot.env` from env (`OMB_OPENAI_KEY`, `OMB_OPENAI_BASE_URL`) and restart gateway/ombot units |
 | `ombot-admin ombrouter probe --json` | Probe OmbRouter presence/version from `openclaw.json` + proxy `/v1/models` (`OMBIST_PROBE_PROXY_B64`, `OMBIST_MIN_VERSION_B64`) |
 | `ombot-admin ombrouter install [--pinned-ref <sha>] --json` | Clone/build OmbRouter and `npm install -g .` (then best-effort restart gateway unit) |
 | `ombot-admin ombot health-port ensure-internal --json` | Restrict Ombot `HEALTH_PORT` to localhost + tailnet |

@@ -6,6 +6,12 @@ ombist_cmd_route_sync_main() {
   local cfg="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
   local ombot_group="${OMBOT_GROUP:-ombot}"
   local ombot_home="${OMBOT_HOME:-/home/ombot}"
+  ombot_home="$(printf '%s' "${ombot_home}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  if [[ -z "${ombot_home}" ]]; then
+    ombot_home="/home/ombot"
+  elif [[ "${ombot_home}" != /* ]]; then
+    ombot_home="/${ombot_home#./}"
+  fi
   local patch_b64="${SYNC_OPENCLAW_PATCH_B64:-}"
   local cost_b64="${SYNC_COST_CONFIG_JSON_B64:-}"
   local cost_path="${SYNC_COST_CONFIG_PATH:-}"
@@ -27,10 +33,10 @@ ombist_cmd_route_sync_main() {
 
   local work="/tmp/ombist-route-sync-$$"
   local patch_path="${work}/patch.json"
-  local merge_js="${work}/merge-openclaw.mjs"
+  local merge_js="${work}/merge-openclaw.cjs"
   local merge_out="${work}/merged-openclaw.json"
   local auth_path="${work}/auth.json"
-  local auth_js="${work}/merge-auth.mjs"
+  local auth_js="${work}/merge-auth.cjs"
   local cost_tmp="${work}/cost-config.json"
   mkdir -p "${work}" || {
     ombist_emit_envelope false "route_sync" "failed to create temp dir." "{}" "[]" '[{"code":"INTERNAL_ERROR","message":"unable to create temp directory"}]'
@@ -191,16 +197,18 @@ for (const [agentId, providerKeys] of Object.entries(agents)) {
 }
 NODE
 
-    if [[ "$(id -u)" -eq 0 ]]; then
-      if ! HOME="${ombot_home}" OMBOT_HOME="${ombot_home}" OMB_AUTH_PAYLOAD="${auth_path}" "${node_bin}" "${auth_js}" >/dev/null 2>&1; then
-        ombist_emit_envelope false "route_sync" "auth profile merge failed." "{}" "[]" '[{"code":"AUTH_SYNC_FAILED","message":"failed to merge auth profiles"}]'
-        return 0
-      fi
-    elif command -v sudo >/dev/null 2>&1 && sudo -n -u ombot true >/dev/null 2>&1; then
+    if command -v sudo >/dev/null 2>&1 && sudo -n -u ombot true >/dev/null 2>&1; then
       if ! sudo -n -u ombot env HOME="${ombot_home}" OMBOT_HOME="${ombot_home}" OMB_AUTH_PAYLOAD="${auth_path}" PATH="/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/ombot/npm-global/bin" "${node_bin}" "${auth_js}" >/dev/null 2>&1; then
         ombist_emit_envelope false "route_sync" "auth profile merge failed." "{}" "[]" '[{"code":"AUTH_SYNC_FAILED","message":"failed to merge auth profiles"}]'
         return 0
       fi
+    elif [[ "$(id -u)" -eq 0 ]]; then
+      if ! HOME="${ombot_home}" OMBOT_HOME="${ombot_home}" OMB_AUTH_PAYLOAD="${auth_path}" "${node_bin}" "${auth_js}" >/dev/null 2>&1; then
+        ombist_emit_envelope false "route_sync" "auth profile merge failed." "{}" "[]" '[{"code":"AUTH_SYNC_FAILED","message":"failed to merge auth profiles"}]'
+        return 0
+      fi
+      # Root fallback can create root-owned agent directories; restore ownership for runtime writes.
+      ombist_as_root chown -R "ombot:${ombot_group}" "${ombot_home}/.openclaw/agents" >/dev/null 2>&1 || true
     else
       local err_no_sudo
       err_no_sudo="$(printf '[{"code":"NO_SUDO","message":%s}]' "$(ombist_json_escape_string "sudo -n -u ombot required for auth profile sync")")"
