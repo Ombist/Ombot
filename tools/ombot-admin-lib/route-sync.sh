@@ -37,7 +37,10 @@ ombist_cmd_route_sync_main() {
     return 0
   }
   cleanup_route_sync_tmp() {
-    rm -rf "${work}" >/dev/null 2>&1 || true
+    local d="${work:-}"
+    if [[ -n "${d}" ]]; then
+      rm -rf "${d}" >/dev/null 2>&1 || true
+    fi
   }
   trap cleanup_route_sync_tmp EXIT
 
@@ -102,8 +105,15 @@ deepMerge(cur, patch);
 fs.writeFileSync(outPath, JSON.stringify(cur, null, 2) + '\n');
 NODE
 
-    if ! OMB_CFG="${cfg}" OMB_PATCH="${patch_path}" OMB_OUT="${merge_out}" "${node_bin}" "${merge_js}" >/dev/null 2>&1; then
-      ombist_emit_envelope false "route_sync" "openclaw merge failed." "{}" "[]" '[{"code":"MERGE_FAILED","message":"openclaw patch merge failed"}]'
+    local merge_err_file="${work}/merge.err"
+    if ! OMB_CFG="${cfg}" OMB_PATCH="${patch_path}" OMB_OUT="${merge_out}" "${node_bin}" "${merge_js}" >/dev/null 2>"${merge_err_file}"; then
+      local merge_err merge_err_json
+      merge_err="$(tr '\n' ' ' < "${merge_err_file}" 2>/dev/null | sed 's/[[:space:]]\+/ /g' | cut -c1-300)"
+      if [[ -z "${merge_err}" ]]; then
+        merge_err="openclaw patch merge failed"
+      fi
+      merge_err_json="$(printf '[{"code":"MERGE_FAILED","message":%s}]' "$(ombist_json_escape_string "${merge_err}")")"
+      ombist_emit_envelope false "route_sync" "openclaw merge failed." "{}" "[]" "${merge_err_json}"
       return 0
     fi
     if ! ombist_as_root cp "${merge_out}" "${cfg}"; then
