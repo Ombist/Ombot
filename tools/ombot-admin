@@ -3,12 +3,19 @@
 # Install: /opt/ombot/bin/ombot-admin + /opt/ombot/bin/ombot-admin-lib/
 set -uo pipefail
 
-OMBOT_ADMIN_VERSION="1.0.2"
+OMBOT_ADMIN_VERSION="1.1.0"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="${ROOT}/ombot-admin-lib"
 
 die() {
-  echo "ombot-admin: $*" >&2
+  if declare -F ombist_emit_envelope >/dev/null 2>&1; then
+    local msg="$*"
+    local errs
+    errs="$(printf '[{"code":"UNKNOWN_COMMAND","message":%s}]' "$(ombist_json_escape_string "${msg}")")"
+    ombist_emit_envelope false "unknown_command" "${msg}" "{}" "[]" "${errs}"
+  else
+    echo "ombot-admin: $*" >&2
+  fi
   exit 2
 }
 
@@ -27,9 +34,13 @@ die() {
 # shellcheck source=/dev/null
 . "${LIB}/ombrouter.sh"
 # shellcheck source=/dev/null
+. "${LIB}/ombrouter-probe.sh"
+# shellcheck source=/dev/null
 . "${LIB}/health-port.sh"
 # shellcheck source=/dev/null
 . "${LIB}/openclaw-config.sh"
+# shellcheck source=/dev/null
+. "${LIB}/route-sync.sh"
 # shellcheck source=/dev/null
 . "${LIB}/gateway-stability.sh"
 
@@ -41,6 +52,8 @@ Usage:
   ombot-admin tls rotate --pub-host <host> [--client-root-ca-sha256 <hex>] [--json]
   ombot-admin tls show [--json]
   ombot-admin systemctl monitor [--json]
+  ombot-admin route sync [--json]
+  ombot-admin ombrouter probe [--json]
   ombot-admin ombrouter install [--pinned-ref <sha>] [--json]
   ombot-admin ombot health-port ensure-internal [--json]
   ombot-admin openclaw config ensure-local [--json]
@@ -50,7 +63,7 @@ EOF
 }
 
 cmd_version() {
-  local caps='["tls","preflight","systemctl","ombrouter","health_port","openclaw_config"]'
+  local caps='["tls","preflight","systemctl","route_sync","ombrouter","ombrouter_probe","health_port","openclaw_config"]'
   local data
   data="$(printf '{"version":%s,"capabilities":%s}' "$(ombist_json_escape_string "${OMBOT_ADMIN_VERSION}")" "${caps}")"
   ombist_emit_envelope true "version" "ombot-admin ${OMBOT_ADMIN_VERSION}" "${data}" "[]" "[]"
@@ -192,19 +205,33 @@ main() {
       [[ "${args[1]:-}" == "monitor" ]] || die "systemctl only supports monitor"
       ombist_cmd_systemctl_monitor_main
       ;;
+    route)
+      [[ "${args[1]:-}" == "sync" ]] || die "route only supports sync"
+      ombist_cmd_route_sync_main
+      ;;
     ombrouter)
-      [[ "${args[1]:-}" == "install" ]] || die "ombrouter only supports install"
-      local pin=""
-      local i=2
-      while [[ $i -lt ${#args[@]} ]]; do
-        if [[ "${args[$i]}" == "--pinned-ref" ]]; then
-          pin="${args[$((i + 1))]:-}"
-          i=$((i + 2))
-        else
-          i=$((i + 1))
-        fi
-      done
-      ombist_cmd_ombrouter_install_main "${pin}"
+      [[ ${#args[@]} -ge 2 ]] || die "ombrouter needs subcommand"
+      case "${args[1]}" in
+        install)
+          local pin=""
+          local i=2
+          while [[ $i -lt ${#args[@]} ]]; do
+            if [[ "${args[$i]}" == "--pinned-ref" ]]; then
+              pin="${args[$((i + 1))]:-}"
+              i=$((i + 2))
+            else
+              i=$((i + 1))
+            fi
+          done
+          ombist_cmd_ombrouter_install_main "${pin}"
+          ;;
+        probe)
+          ombist_cmd_ombrouter_probe_main
+          ;;
+        *)
+          die "ombrouter supports: install | probe"
+          ;;
+      esac
       ;;
     ombot)
       [[ "${args[1]:-}" == "health-port" && "${args[2]:-}" == "ensure-internal" ]] || die "ombot only supports health-port ensure-internal"
