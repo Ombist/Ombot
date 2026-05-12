@@ -4,7 +4,19 @@
 
 ombist_cmd_route_sync_main() {
   local cfg="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
+  local runtime_cfg="${OPENCLAW_RUNTIME_CONFIG_PATH:-/home/ombot/.openclaw/openclaw.json}"
+  local ombot_tools_dir="${OMBOT_TOOLS_DIR:-}"
+  if [[ -z "${ombot_tools_dir}" ]] && [[ -n "${LIB:-}" ]]; then
+    if ombot_tools_dir="$(cd "${LIB}/../../Ombot/tools" 2>/dev/null && pwd)" && [[ -f "${ombot_tools_dir}/openclaw-merge-patch.mjs" ]]; then
+      :
+    elif [[ -n "${OMBOT_REPO_DIR:-}" ]] && [[ -f "${OMBOT_REPO_DIR}/tools/openclaw-merge-patch.mjs" ]]; then
+      ombot_tools_dir="${OMBOT_REPO_DIR}/tools"
+    else
+      ombot_tools_dir=""
+    fi
+  fi
   local ombot_group="${OMBOT_GROUP:-ombot}"
+  local ombot_user="${OMBOT_USER:-ombot}"
   local ombot_home="${OMBOT_HOME:-/home/ombot}"
   ombot_home="$(printf '%s' "${ombot_home}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   if [[ -z "${ombot_home}" ]]; then
@@ -13,6 +25,7 @@ ombist_cmd_route_sync_main() {
     ombot_home="/${ombot_home#./}"
   fi
   local patch_b64="${SYNC_OPENCLAW_PATCH_B64:-}"
+  local patch_target="${SYNC_OPENCLAW_PATCH_TARGET:-merged}"
   local cost_b64="${SYNC_COST_CONFIG_JSON_B64:-}"
   local cost_path="${SYNC_COST_CONFIG_PATH:-}"
   local auth_b64="${SYNC_OPENCLAW_AUTH_B64:-}"
@@ -57,12 +70,55 @@ ombist_cmd_route_sync_main() {
 
   if [[ -n "${patch_b64}" ]]; then
     did_patch=true
+    # Prefer runtime JSON as merge base when present (Gateway reads OPENCLAW_RUNTIME_CONFIG_PATH); else /etc copy.
+    local merge_source="${cfg}"
+    if [[ -f "${runtime_cfg}" ]]; then
+      merge_source="${runtime_cfg}"
+    fi
     if ! printf '%s' "${patch_b64}" | base64 -d > "${patch_path}" 2>/dev/null; then
       ombist_emit_envelope false "route_sync" "invalid patch payload." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid patch payload base64"}]'
       return 0
     fi
 
-    cat > "${merge_js}" <<'NODE'
+    local merge_err_file="${work}/merge.err"
+    if [[ "${patch_target}" == "fragment" ]]; then
+      if [[ -z "${ombot_tools_dir}" ]] || [[ ! -f "${ombot_tools_dir}/openclaw-merge-route-fragment.mjs" ]] || [[ ! -f "${ombot_tools_dir}/openclaw-compose.mjs" ]]; then
+        ombist_emit_envelope false "route_sync" "Ombot tools dir missing compose scripts." "{}" "[]" '[{"code":"MERGE_FAILED","message":"OPENCLAW fragment mode requires Ombot tools (set OMBOT_TOOLS_DIR or install Ombot under /opt/ombot/Ombot)"}]'
+        return 0
+      fi
+      local frag_dir="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}"
+      local frag_40="${frag_dir}/40-route-sync-patch.json"
+      local merged_frag="${work}/merged-40-route-sync.json"
+      if ! ombist_as_root mkdir -p "${frag_dir}"; then
+        ombist_emit_envelope false "route_sync" "failed to create fragments dir." "{}" "[]" '[{"code":"NO_SUDO","message":"passwordless sudo or root required"}]'
+        return 0
+      fi
+      if ! ombist_as_root env OMBOT_REPO_DIR="${OMBOT_REPO_DIR:-}" "${node_bin}" "${ombot_tools_dir}/openclaw-merge-route-fragment.mjs" "${frag_40}" "${patch_path}" "${merged_frag}" >/dev/null 2>"${merge_err_file}"; then
+        local merge_err merge_err_json
+        merge_err="$(tr '\n' ' ' < "${merge_err_file}" 2>/dev/null | sed 's/[[:space:]]\+/ /g' | cut -c1-300)"
+        merge_err_json="$(printf '[{"code":"MERGE_FAILED","message":%s}]' "$(ombist_json_escape_string "${merge_err:-fragment merge failed}")")"
+        ombist_emit_envelope false "route_sync" "openclaw fragment merge failed." "{}" "[]" "${merge_err_json}"
+        return 0
+      fi
+      if ! ombist_as_root cp "${merged_frag}" "${frag_40}"; then
+        ombist_emit_envelope false "route_sync" "fragment write failed." "{}" "[]" '[{"code":"MERGE_FAILED","message":"failed to write 40-route-sync-patch.json"}]'
+        return 0
+      fi
+      ombist_as_root chown "root:${ombot_group}" "${frag_40}" 2>/dev/null || ombist_as_root chown root:root "${frag_40}" 2>/dev/null || true
+      ombist_as_root chmod 640 "${frag_40}" 2>/dev/null || true
+      if ! ombist_as_root env OPENCLAW_FRAGMENTS_DIR="${frag_dir}" OPENCLAW_RUNTIME_CONFIG_PATH="${runtime_cfg}" OPENCLAW_CONFIG_PATH="${cfg}" OPENCLAW_COMPOSE_USE_FLOCK=0 "${node_bin}" "${ombot_tools_dir}/openclaw-compose.mjs" >/dev/null 2>"${merge_err_file}"; then
+        local merge_err merge_err_json
+        merge_err="$(tr '\n' ' ' < "${merge_err_file}" 2>/dev/null | sed 's/[[:space:]]\+/ /g' | cut -c1-300)"
+        merge_err_json="$(printf '[{"code":"MERGE_FAILED","message":%s}]' "$(ombist_json_escape_string "${merge_err:-compose failed}")")"
+        ombist_emit_envelope false "route_sync" "openclaw compose failed." "{}" "[]" "${merge_err_json}"
+        return 0
+      fi
+      ombist_as_root chown "${ombot_user}:${ombot_group}" "${runtime_cfg}" 2>/dev/null || ombist_as_root chown "ombot:${ombot_group}" "${runtime_cfg}" 2>/dev/null || true
+      ombist_as_root chown "root:${ombot_group}" "${cfg}" 2>/dev/null || ombist_as_root chown root:root "${cfg}" 2>/dev/null || true
+      ombist_as_root chmod 640 "${runtime_cfg}" "${cfg}" 2>/dev/null || true
+    else
+      if [[ -z "${ombot_tools_dir}" ]] || [[ ! -f "${ombot_tools_dir}/openclaw-merge-patch.mjs" ]]; then
+        cat > "${merge_js}" <<'NODE'
 const fs = require('fs');
 const cfgPath = process.env.OMB_CFG;
 const patchPath = process.env.OMB_PATCH;
@@ -110,26 +166,47 @@ function deepMerge(target, source) {
 deepMerge(cur, patch);
 fs.writeFileSync(outPath, JSON.stringify(cur, null, 2) + '\n');
 NODE
-
-    local merge_err_file="${work}/merge.err"
-    if ! OMB_CFG="${cfg}" OMB_PATCH="${patch_path}" OMB_OUT="${merge_out}" "${node_bin}" "${merge_js}" >/dev/null 2>"${merge_err_file}"; then
-      local merge_err merge_err_json
-      merge_err="$(tr '\n' ' ' < "${merge_err_file}" 2>/dev/null | sed 's/[[:space:]]\+/ /g' | cut -c1-300)"
-      if [[ -z "${merge_err}" ]]; then
-        merge_err="openclaw patch merge failed"
+        if ! OMB_CFG="${merge_source}" OMB_PATCH="${patch_path}" OMB_OUT="${merge_out}" "${node_bin}" "${merge_js}" >/dev/null 2>"${merge_err_file}"; then
+          local merge_err merge_err_json
+          merge_err="$(tr '\n' ' ' < "${merge_err_file}" 2>/dev/null | sed 's/[[:space:]]\+/ /g' | cut -c1-300)"
+          if [[ -z "${merge_err}" ]]; then
+            merge_err="openclaw patch merge failed"
+          fi
+          merge_err_json="$(printf '[{"code":"MERGE_FAILED","message":%s}]' "$(ombist_json_escape_string "${merge_err}")")"
+          ombist_emit_envelope false "route_sync" "openclaw merge failed." "{}" "[]" "${merge_err_json}"
+          return 0
+        fi
+      else
+        if ! "${node_bin}" "${ombot_tools_dir}/openclaw-merge-patch.mjs" "${merge_source}" "${patch_path}" "${merge_out}" >/dev/null 2>"${merge_err_file}"; then
+          local merge_err merge_err_json
+          merge_err="$(tr '\n' ' ' < "${merge_err_file}" 2>/dev/null | sed 's/[[:space:]]\+/ /g' | cut -c1-300)"
+          if [[ -z "${merge_err}" ]]; then
+            merge_err="openclaw patch merge failed"
+          fi
+          merge_err_json="$(printf '[{"code":"MERGE_FAILED","message":%s}]' "$(ombist_json_escape_string "${merge_err}")")"
+          ombist_emit_envelope false "route_sync" "openclaw merge failed." "{}" "[]" "${merge_err_json}"
+          return 0
+        fi
       fi
-      merge_err_json="$(printf '[{"code":"MERGE_FAILED","message":%s}]' "$(ombist_json_escape_string "${merge_err}")")"
-      ombist_emit_envelope false "route_sync" "openclaw merge failed." "{}" "[]" "${merge_err_json}"
-      return 0
+      if ! ombist_as_root cp "${merge_out}" "${cfg}"; then
+        local err_no_sudo
+        err_no_sudo="$(printf '[{"code":"NO_SUDO","message":%s}]' "$(ombist_json_escape_string "passwordless sudo or root required")")"
+        ombist_emit_envelope false "route_sync" "need root or passwordless sudo." "{}" "[]" "${err_no_sudo}"
+        return 0
+      fi
+      ombist_as_root chown "root:${ombot_group}" "${cfg}" 2>/dev/null || ombist_as_root chown root:root "${cfg}" 2>/dev/null || true
+      ombist_as_root chmod 640 "${cfg}" 2>/dev/null || true
+      if [[ -n "${runtime_cfg}" && "${cfg}" != "${runtime_cfg}" ]]; then
+        if ! ombist_as_root mkdir -p "$(dirname "${runtime_cfg}")"; then
+          :
+        elif ! ombist_as_root cp "${merge_out}" "${runtime_cfg}"; then
+          :
+        else
+          ombist_as_root chown "${ombot_user}:${ombot_group}" "${runtime_cfg}" 2>/dev/null || true
+          ombist_as_root chmod 640 "${runtime_cfg}" 2>/dev/null || true
+        fi
+      fi
     fi
-    if ! ombist_as_root cp "${merge_out}" "${cfg}"; then
-      local err_no_sudo
-      err_no_sudo="$(printf '[{"code":"NO_SUDO","message":%s}]' "$(ombist_json_escape_string "passwordless sudo or root required")")"
-      ombist_emit_envelope false "route_sync" "need root or passwordless sudo." "{}" "[]" "${err_no_sudo}"
-      return 0
-    fi
-    ombist_as_root chown "root:${ombot_group}" "${cfg}" 2>/dev/null || ombist_as_root chown root:root "${cfg}" 2>/dev/null || true
-    ombist_as_root chmod 640 "${cfg}" 2>/dev/null || true
   fi
 
   if [[ -n "${cost_b64}" ]]; then
@@ -228,12 +305,13 @@ NODE
   fi
 
   local data summary
-  data="$(printf '{"didPatch":%s,"didCostConfig":%s,"didAuthSync":%s,"costConfigPath":%s,"gatewayRestart":%s}' \
+  data="$(printf '{"didPatch":%s,"didCostConfig":%s,"didAuthSync":%s,"costConfigPath":%s,"gatewayRestart":%s,"openclawPatchTarget":%s}' \
     "${did_patch}" \
     "${did_cost}" \
     "${did_auth}" \
     "$(ombist_json_escape_string "${cost_path}")" \
-    "$(ombist_json_escape_string "${gw_restart}")")"
+    "$(ombist_json_escape_string "${gw_restart}")" \
+    "$(ombist_json_escape_string "${patch_target}")")"
   summary="ombist_route_sync_ok; gateway=${gw_restart}"
   ombist_emit_envelope true "route_sync" "${summary}" "${data}" "[]" "[]"
 }

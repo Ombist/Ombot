@@ -81,11 +81,26 @@ ombist_cmd_gateway_config_drift_main() {
   local env_path runtime_cfg
   env_path="${OMBOT_ENV_PATH:-/etc/ombot/ombot.env}"
   runtime_cfg="${OPENCLAW_RUNTIME_CONFIG_PATH:-/home/ombot/.openclaw/openclaw.json}"
+  local ombot_home="${OMBOT_HOME:-/home/ombot}"
+  local frag_dir="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}"
+  local ombot_tools_dir="${OMBOT_TOOLS_DIR:-}"
+  if [[ -z "${ombot_tools_dir}" ]] && [[ -n "${LIB:-}" ]]; then
+    if ombot_tools_dir="$(cd "${LIB}/../../Ombot/tools" 2>/dev/null && pwd)" && [[ -f "${ombot_tools_dir}/ombist-openclaw-drift.mjs" ]]; then
+      :
+    elif [[ -n "${OMBOT_REPO_DIR:-}" ]] && [[ -f "${OMBOT_REPO_DIR}/tools/ombist-openclaw-drift.mjs" ]]; then
+      ombot_tools_dir="${OMBOT_REPO_DIR}/tools"
+    else
+      ombot_tools_dir=""
+    fi
+  fi
 
   local env_dump runtime_dump systemd_env
   env_dump="$(ombist_as_root cat "${env_path}" 2>/dev/null || true)"
   runtime_dump="$(ombist_as_root cat "${runtime_cfg}" 2>/dev/null || true)"
   systemd_env="$(ombist_as_root systemctl show ombist-ombot.service -p Environment --no-pager 2>/dev/null || true)"
+
+  local node_bin
+  node_bin="$(command -v node 2>/dev/null || command -v nodejs 2>/dev/null || true)"
 
   local data
   data="$(
@@ -151,6 +166,24 @@ const out = {
 process.stdout.write(JSON.stringify(out));
 ' "${env_dump}" "${runtime_dump}" "${systemd_env}"
   )"
+
+  if [[ -n "${node_bin}" ]] && [[ -n "${ombot_tools_dir}" ]] && [[ -f "${ombot_tools_dir}/ombist-openclaw-drift.mjs" ]]; then
+    local extra
+    extra="$("${node_bin}" "${ombot_tools_dir}/ombist-openclaw-drift.mjs" "${env_dump}" "${runtime_dump}" "${systemd_env}" "${frag_dir}" "${ombot_home}" 2>/dev/null || true)"
+    if [[ -n "${extra}" ]] && [[ "${extra}" == \{* ]]; then
+      data="$("${node_bin}" -e '
+const base = JSON.parse(process.argv[1]);
+const ext = JSON.parse(process.argv[2]);
+const drift = Array.isArray(base.drift) ? base.drift.slice() : [];
+if (ext.composedMatchesRuntime === false) drift.push("composed_runtime_vs_fragments_mismatch");
+if (ext.bridgeAgentIdMatch === false) drift.push("bridge_agent_id_vs_agents_list");
+if (ext.llmSecretDuplicationWarning) drift.push("llm_secret_env_and_auth_profiles_overlap");
+base.drift = drift;
+base.openclawExtended = ext;
+process.stdout.write(JSON.stringify(base));
+' "${data}" "${extra}")"
+    fi
+  fi
 
   local ok_flag summary
   ok_flag="$(node -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(j.drift.length===0?"true":"false")' "${data}")"

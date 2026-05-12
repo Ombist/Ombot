@@ -23,24 +23,25 @@ Every invocation prints **one JSON object** to stdout (no `PROVISION_SUMMARY_*` 
 }
 ```
 
-On failure: `ok: false` and `errors: [{ "code": "NO_SUDO", "message": "..." }]`. Common codes: `CLI_MISSING`, `NO_SUDO`, `NO_OPENSSL`, `NO_FIREWALL_TOOL`, `TLS_FAILED`, `NO_SYSTEMCTL`, `NO_NODE`, `MERGE_FAILED`, `AUTH_SYNC_FAILED`, `UNKNOWN_COMMAND`.
+On failure: `ok: false` and `errors: [{ "code": "NO_SUDO", "message": "..." }]`. Common codes: `CLI_MISSING`, `NO_SUDO`, `NO_OPENSSL`, `NO_FIREWALL_TOOL`, `TLS_FAILED`, `NO_SYSTEMCTL`, `NO_NODE`, `MERGE_FAILED`, `AUTH_SYNC_FAILED`, `COMPOSE_LOCKED`, `STRICT_KEYS_VIOLATION`, `UNKNOWN_COMMAND`.
 
 ## Commands
 
 | Command | Purpose |
 |--------|---------|
-| `ombot-admin --version` | Version and capability list |
+| `ombot-admin --version` | Version and capability list (`capabilities.openclaw_compose`, etc.) |
 | `ombot-admin preflight --json` | OS / tools / network reachability probe |
 | `ombot-admin tls rotate --pub-host <host> [--client-root-ca-sha256 <hex>] --json` | Regenerate `/etc/ombot/tls` and reload nginx if valid |
 | `ombot-admin tls show --json` | Inspect current server cert / SAN |
 | `ombot-admin systemctl monitor --json` | Two services: for each role, prefers **`ombist-ombot.service` / `ombist-openclaw-gateway.service`** when the matching file exists under **`/etc/systemd/system/`** (Ombist_IOS provision layout), else if `systemctl cat <unit>` succeeds, else falls back to **`ombot.service` / `openclaw-gateway@Ombist_IOS.service`** (manual/README install). `--no-pager` on `systemctl` calls. Same JSON shape as before. |
-| `ombot-admin route sync --json` | Apply route payloads from env (`SYNC_OPENCLAW_PATCH_B64`, optional `SYNC_COST_CONFIG_JSON_B64` + `SYNC_COST_CONFIG_PATH`, optional `SYNC_OPENCLAW_AUTH_B64`) and restart gateway unit when present |
+| `ombot-admin route sync --json` | Apply route payloads from env (`SYNC_OPENCLAW_PATCH_B64`, optional `SYNC_COST_CONFIG_JSON_B64` + `SYNC_COST_CONFIG_PATH`, optional `SYNC_OPENCLAW_AUTH_B64`) and restart gateway unit when present. **`SYNC_OPENCLAW_PATCH_TARGET`** (default **`merged`**) controls OpenClaw patch application: **`merged`** deep-merges into the effective `openclaw.json` (legacy iOS behavior); **`fragment`** merges into `openclaw.d/40-route-sync-patch.json` then runs **`openclaw-compose`**. |
+| `ombot-admin openclaw compose [--dry-run] [--rollback] [--strict-keys] [--no-flock] --json` | Merge **`OPENCLAW_FRAGMENTS_DIR`** (`*.json`, sorted) into **`OPENCLAW_RUNTIME_CONFIG_PATH`** (+ optional **`OPENCLAW_CONFIG_PATH`**); atomic write with **`.bak`** backup; optional lock under **`.compose.lock`**. **`--dry-run`** prints fragment SHA256s, `composedHash`, and whether runtime on-disk matches (secrets are not echoed in structured paths beyond existing redaction rules). **`--rollback`** restores from **`${OPENCLAW_RUNTIME_CONFIG_PATH}.bak`**. Exit codes: **`2`** = compose lock timeout (`COMPOSE_LOCKED`), **`3`** = **`STRICT_KEYS_VIOLATION`**. |
 | `ombot-admin openai env apply --json` | Apply `OPENAI_API_KEY` / `OPENAI_BASE_URL` into `/etc/ombot/ombot.env` from env (`OMB_OPENAI_KEY`, `OMB_OPENAI_BASE_URL`) and restart gateway/ombot units |
 | `ombot-admin ombrouter probe --json` | Probe OmbRouter presence/version from `openclaw.json` + proxy `/v1/models` (`OMBIST_PROBE_PROXY_B64`, `OMBIST_MIN_VERSION_B64`) |
 | `ombot-admin ombrouter install [--pinned-ref <sha>] --json` | Clone/build OmbRouter and `npm install -g .` (then best-effort restart gateway unit) |
 | `ombot-admin ombot health-port ensure-internal --json` | Restrict Ombot `HEALTH_PORT` to localhost + tailnet |
 | `ombot-admin gateway health-gates --json` | Evaluate Pairing / Scope / Provider gates from recent Ombot + Gateway logs (default window `10 min ago`) |
-| `ombot-admin gateway config-drift --json` | Compare `OPENCLAW_GATEWAY_TOKEN` and `OPENCLAW_BRIDGE_OPERATOR_SCOPES` across env/runtime/systemd sources and report drift |
+| `ombot-admin gateway config-drift --json` | Compare `OPENCLAW_GATEWAY_TOKEN` and `OPENCLAW_BRIDGE_OPERATOR_SCOPES` across env/runtime/systemd sources; when **`OPENCLAW_FRAGMENTS_DIR`** is present, also merges **`ombist-openclaw-drift.mjs`** output (per-fragment SHA256, composed vs runtime hash, optional bridge agent id vs `agents.list`, optional **`llm_secret_env_and_auth_profiles_overlap`** warning). Drift codes may include `composed_runtime_vs_fragments_mismatch`, `bridge_agent_id_vs_agents_list`, `llm_secret_env_and_auth_profiles_overlap`. |
 
 ### TLS version fingerprint (`rootCaSha256Hex`)
 
@@ -59,7 +60,7 @@ After changing `systemctl monitor` behavior, machines must run an **`ombot-admin
 When `NOT_PAIRED`, `missing scope: operator.write`, and provider 401 appear in mixed waves, run:
 
 1. `ombot-admin gateway health-gates --json` to detect which gate is currently failing.
-2. `ombot-admin gateway config-drift --json` to catch token/scope drift among `/etc/ombot/ombot.env`, runtime `openclaw.json`, and `systemctl` env.
+2. `ombot-admin gateway config-drift --json` to catch token/scope drift among `/etc/ombot/ombot.env`, runtime `openclaw.json`, `systemctl` env, and (when fragments are used) composed-config vs on-disk drift from `openclaw.d`.
 3. `tools/gateway-stability-runbook.sh fallback-on` to print reversible fallback env commands (provider direct fallback while gateway write path is degraded).
 
 First-time single-bot provision still emits the legacy `PROVISION_SUMMARY_*` / `ROOTCA_PEM_B64_*` markers for the bundled `provision-single-bot.sh` path.

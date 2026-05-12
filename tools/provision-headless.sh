@@ -36,6 +36,7 @@ NPM_PREFIX="${INSTALL_ROOT}/npm-global"
 OMBOT_ENV_PATH="${OMBOT_ENV_PATH:-/etc/ombot/ombot.env}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
 OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH:-${OMBOT_HOME}/.openclaw/openclaw.json}"
+OPENCLAW_FRAGMENTS_DIR="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}"
 GW_SERVICE_PATH="/etc/systemd/system/ombist-openclaw-gateway.service"
 OMBOT_SERVICE_PATH="/etc/systemd/system/ombist-ombot.service"
 
@@ -197,34 +198,43 @@ if [[ "${SEED_OPENCLAW_WORKSPACE}" -eq 1 ]]; then
   as_root chmod 750 "${OPENCLAW_WORKSPACE_DIR}"
 fi
 
-echo "ombist-provision: writing OpenClaw config and Ombot env..."
-if [[ "${SEED_OPENCLAW_WORKSPACE}" -eq 1 ]]; then
-  as_root tee "${OPENCLAW_CONFIG_PATH}" >/dev/null <<EOF
+echo "ombist-provision: writing OpenClaw fragments + compose..."
+as_root mkdir -p "${OPENCLAW_FRAGMENTS_DIR}"
+as_root tee "${OPENCLAW_FRAGMENTS_DIR}/10-gateway-transport.json" >/dev/null <<EOF
 {
   "gateway": {
     "mode": "local",
     "bind": "loopback",
     "port": ${OPENCLAW_GATEWAY_PORT}
-  },
+  }
+}
+EOF
+if [[ "${SEED_OPENCLAW_WORKSPACE}" -eq 1 ]]; then
+  as_root tee "${OPENCLAW_FRAGMENTS_DIR}/15-openclaw-agent-workspace.json" >/dev/null <<EOF
+{
   "agent": {
     "workspace": "${OMBOT_HOME}/.openclaw/workspace",
     "skipBootstrap": true
   }
 }
 EOF
-else
-  as_root tee "${OPENCLAW_CONFIG_PATH}" >/dev/null <<EOF
+fi
+as_root tee "${OPENCLAW_FRAGMENTS_DIR}/20-gateway-security.json" >/dev/null <<EOF
 {
   "gateway": {
-    "mode": "local",
-    "bind": "loopback",
-    "port": ${OPENCLAW_GATEWAY_PORT}
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
   }
 }
 EOF
+as_root chown -R "root:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}"
+as_root chmod 775 "${OPENCLAW_FRAGMENTS_DIR}"
+as_root chmod 640 "${OPENCLAW_FRAGMENTS_DIR}/10-gateway-transport.json" "${OPENCLAW_FRAGMENTS_DIR}/20-gateway-security.json"
+if [[ "${SEED_OPENCLAW_WORKSPACE}" -eq 1 ]]; then
+  as_root chmod 640 "${OPENCLAW_FRAGMENTS_DIR}/15-openclaw-agent-workspace.json"
 fi
-as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
-as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
 
 OMBIST_ROUTE_PATCH_B64="${OPENCLAW_ROUTE_PATCH_JSON_B64:-}"
 if [[ -z "${OMBIST_ROUTE_PATCH_B64}" && -n "${OPENCLAW_AGENTS_DEFAULTS_MODEL_JSON_B64:-}" ]]; then
@@ -232,62 +242,33 @@ if [[ -z "${OMBIST_ROUTE_PATCH_B64}" && -n "${OPENCLAW_AGENTS_DEFAULTS_MODEL_JSO
 fi
 
 if [[ -n "${OMBIST_ROUTE_PATCH_B64}" ]]; then
-  echo "ombist-provision: merging OpenClaw agents route patch into config..."
+  echo "ombist-provision: merging OpenClaw route patch into fragment 40-provision-route-patch.json..."
   OMBIST_PATCH_JSON="/tmp/ombist-agents-model-patch-$$.json"
-  OMBIST_MERGED_JSON="/tmp/ombist-agents-model-out-$$.json"
-  OMBIST_MERGE_JS="/tmp/ombist-agents-model-merge-$$.js"
+  OMBIST_MERGED_40="/tmp/ombist-frag-40-out-$$.json"
   printf '%s' "${OMBIST_ROUTE_PATCH_B64}" | base64 -d | as_root tee "${OMBIST_PATCH_JSON}" >/dev/null
   as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OMBIST_PATCH_JSON}"
   as_root chmod 640 "${OMBIST_PATCH_JSON}"
-  as_root rm -f "${OMBIST_MERGED_JSON}"
-  as_root touch "${OMBIST_MERGED_JSON}"
-  as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OMBIST_MERGED_JSON}"
-  as_root chmod 640 "${OMBIST_MERGED_JSON}"
-  as_root tee "${OMBIST_MERGE_JS}" >/dev/null <<'OMBIST_NODE_MERGE'
-#!/usr/bin/env node
-const fs = require('fs');
-const cfgPath = process.argv[2];
-const patchPath = process.argv[3];
-const outPath = process.argv[4];
-const cur = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
-const patch = JSON.parse(fs.readFileSync(patchPath, 'utf8'));
-function dm(t, s) {
-  for (const k of Object.keys(s)) {
-    const sv = s[k];
-    if (sv !== null && typeof sv === 'object' && !Array.isArray(sv)) {
-      if (!t[k] || typeof t[k] !== 'object' || Array.isArray(t[k])) t[k] = {};
-      dm(t[k], sv);
-    } else {
-      t[k] = sv;
-    }
-  }
-}
-dm(cur, patch);
-fs.writeFileSync(outPath, JSON.stringify(cur, null, 2) + '\n');
-OMBIST_NODE_MERGE
-  as_root chmod 644 "${OMBIST_MERGE_JS}"
-  run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; node '${OMBIST_MERGE_JS}' '${OPENCLAW_CONFIG_PATH}' '${OMBIST_PATCH_JSON}' '${OMBIST_MERGED_JSON}'"
-  as_root cp "${OMBIST_MERGED_JSON}" "${OPENCLAW_CONFIG_PATH}"
-  as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
-  as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
-  as_root rm -f "${OMBIST_MERGE_JS}" "${OMBIST_PATCH_JSON}" "${OMBIST_MERGED_JSON}"
+  run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
+export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
+export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
+node '${OMBOT_REPO_DIR}/tools/openclaw-merge-route-fragment.mjs' '${OPENCLAW_FRAGMENTS_DIR}/40-provision-route-patch.json' '${OMBIST_PATCH_JSON}' '${OMBIST_MERGED_40}'"
+  as_root cp "${OMBIST_MERGED_40}" "${OPENCLAW_FRAGMENTS_DIR}/40-provision-route-patch.json"
+  as_root chown "root:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/40-provision-route-patch.json"
+  as_root chmod 640 "${OPENCLAW_FRAGMENTS_DIR}/40-provision-route-patch.json"
+  as_root rm -f "${OMBIST_PATCH_JSON}" "${OMBIST_MERGED_40}"
 fi
 
-echo "ombist-provision: syncing OpenClaw runtime config under ${OPENCLAW_RUNTIME_CONFIG_PATH}..."
+echo "ombist-provision: composing OpenClaw config from fragments..."
 as_root mkdir -p "$(dirname "${OPENCLAW_RUNTIME_CONFIG_PATH}")"
-as_root cp "${OPENCLAW_CONFIG_PATH}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
-as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
-as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
-
-echo "ombist-provision: OpenClaw CLI config set gateway.mode local (runtime config)..."
 run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
 export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
-export OPENCLAW_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
-openclaw config set gateway.mode local; \
-openclaw config set gateway.auth.mode token; \
-openclaw config set gateway.auth.token '${OPENCLAW_GATEWAY_TOKEN}'" || {
-  echo "ombist-provision: warning: openclaw config set gateway.mode local failed (gateway may stay on status=78/CONFIG)" >&2
+export OPENCLAW_FRAGMENTS_DIR='${OPENCLAW_FRAGMENTS_DIR}'; \
+export OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
+export OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}'; \
+export OPENCLAW_COMPOSE_USE_FLOCK=0; \
+node '${OMBOT_REPO_DIR}/tools/openclaw-compose.mjs'" || {
+  echo "ombist-provision: warning: openclaw-compose failed (gateway may stay on status=78/CONFIG)" >&2
 }
 
 OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID:-default}"
@@ -298,19 +279,22 @@ export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
 export OMBIST_GATEWAY_AGENT_ID='${OMBIST_GATEWAY_AGENT_ID}'; \
 export OMBIST_GATEWAY_AGENT_MODEL='${OMBIST_GATEWAY_AGENT_MODEL}'; \
+export OPENCLAW_FRAGMENTS_DIR='${OPENCLAW_FRAGMENTS_DIR}'; \
 export OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
-unset OPENCLAW_CONFIG_PATH; \
+export OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}'; \
+export OPENCLAW_COMPOSE_USE_FLOCK=0; \
 node '${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs'"
 as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
-as_root cp "${OPENCLAW_RUNTIME_CONFIG_PATH}" "${OPENCLAW_CONFIG_PATH}"
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
+as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombist-gateway-agent.json" 2>/dev/null || true
 
 {
   echo "PORT=${OMBOT_PORT}"
   echo "HEALTH_PORT=${OMBOT_HEALTH_PORT}"
   echo "MIDDLEWARE_WS_URL=${MW_URL}"
+  echo "OPENCLAW_FRAGMENTS_DIR=${OPENCLAW_FRAGMENTS_DIR}"
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
   echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
   echo "OPENCLAW_REQUIRE_MIDDLEWARE_TLS=${OPENCLAW_REQUIRE_MIDDLEWARE_TLS}"

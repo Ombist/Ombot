@@ -1,31 +1,29 @@
 #!/usr/bin/env node
 /**
- * Ensures OpenClaw JSON has an `agents.list` entry matching Ombot's bridge agent id
- * (so Gateway accepts `agent` turns without "unknown agent id").
+ * Ensures OpenClaw JSON has an `agents.list` entry matching Ombot's bridge agent id.
  *
- * Prefer updating only `OPENCLAW_RUNTIME_CONFIG_PATH` (ombot-owned); provision copies to
- * `/etc/ombot/openclaw.json` with `as_root cp`. Writable-only paths are typical; if `/etc` is
- * passed without permission, that write is skipped when at least one path was updated.
+ * When OPENCLAW_FRAGMENTS_DIR exists (or OPENCLAW_AGENTS_FRAGMENT_PATH is set), writes only
+ * the agents fragment under openclaw.d then runs openclaw-compose (single authority).
+ *
+ * Legacy mode (no fragments dir): updates OPENCLAW_RUNTIME_CONFIG_PATH / OPENCLAW_CONFIG_PATH
+ * directly when OPENCLAW_LEGACY_AGENT_WRITE=1 or fragments dir is absent/unset.
  *
  * Env:
- *   OMBIST_GATEWAY_AGENT_ID — agent id to ensure (default: default)
- *   OMBIST_GATEWAY_AGENT_MODEL — model.primary string (default: gpt-4o-mini)
- *   OPENCLAW_RUNTIME_CONFIG_PATH, OPENCLAW_CONFIG_PATH — each non-empty path is updated (deduped)
+ *   OMBIST_GATEWAY_AGENT_ID, OMBIST_GATEWAY_AGENT_MODEL
+ *   OPENCLAW_FRAGMENTS_DIR — default /etc/ombot/openclaw.d when present
+ *   OPENCLAW_AGENTS_FRAGMENT_PATH — override fragment file path
+ *   OPENCLAW_RUNTIME_CONFIG_PATH, OPENCLAW_CONFIG_PATH — for compose + legacy
+ *   OPENCLAW_LEGACY_AGENT_WRITE=1 — force legacy multi-file write
  */
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { spawnSync } from 'child_process';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const agentId = (process.env.OMBIST_GATEWAY_AGENT_ID || 'default').trim() || 'default';
 const primary = (process.env.OMBIST_GATEWAY_AGENT_MODEL || 'gpt-4o-mini').trim() || 'gpt-4o-mini';
-const paths = [
-  process.env.OPENCLAW_RUNTIME_CONFIG_PATH,
-  process.env.OPENCLAW_CONFIG_PATH,
-].filter((p) => typeof p === 'string' && p.trim() !== '');
-
-const unique = [...new Set(paths.map((p) => p.trim()))];
-if (unique.length === 0) {
-  console.error('ensure-openclaw-gateway-agent: set OPENCLAW_RUNTIME_CONFIG_PATH and/or OPENCLAW_CONFIG_PATH');
-  process.exit(1);
-}
 
 function mergeAgents(j) {
   j.agents = j.agents && typeof j.agents === 'object' ? j.agents : {};
@@ -48,6 +46,78 @@ function mergeAgents(j) {
     model: { ...defModel },
   });
   return true;
+}
+
+function runCompose() {
+  const composeJs = path.join(__dirname, 'openclaw-compose.mjs');
+  const r = spawnSync(process.execPath, [composeJs], {
+    env: {
+      ...process.env,
+      OPENCLAW_COMPOSE_USE_FLOCK: process.env.OPENCLAW_COMPOSE_USE_FLOCK || '0',
+    },
+    stdio: 'inherit',
+  });
+  if (r.status !== 0) {
+    console.error(`ensure-openclaw-gateway-agent: compose failed (exit ${r.status})`);
+    process.exit(r.status ?? 1);
+  }
+}
+
+const legacy =
+  String(process.env.OPENCLAW_LEGACY_AGENT_WRITE || '').trim() === '1' ||
+  String(process.env.OPENCLAW_LEGACY_AGENT_WRITE || '').toLowerCase() === 'true';
+
+const fragmentsDir = (process.env.OPENCLAW_FRAGMENTS_DIR || '/etc/ombot/openclaw.d').trim();
+const agentsFragmentPath =
+  (process.env.OPENCLAW_AGENTS_FRAGMENT_PATH || '').trim() ||
+  path.join(fragmentsDir, '30-ombist-gateway-agent.json');
+const useFragments =
+  !legacy && fragmentsDir !== '' && fs.existsSync(fragmentsDir) && fs.statSync(fragmentsDir).isDirectory();
+
+if (useFragments) {
+  let j = {};
+  if (fs.existsSync(agentsFragmentPath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(agentsFragmentPath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        j = parsed;
+      }
+    } catch (e) {
+      console.error(`ensure-openclaw-gateway-agent: invalid fragment ${agentsFragmentPath}: ${e.message}`);
+      process.exit(1);
+    }
+  }
+  if (!j.agents || typeof j.agents !== 'object') j.agents = {};
+  const added = mergeAgents(j);
+  const out = { agents: j.agents };
+  try {
+    fs.writeFileSync(agentsFragmentPath, `${JSON.stringify(out, null, 2)}\n`);
+  } catch (e) {
+    const code = e && e.code;
+    if (code === 'EACCES' || code === 'EPERM') {
+      console.error(
+        `ensure-openclaw-gateway-agent: cannot write fragment (not permitted): ${agentsFragmentPath}`
+      );
+      process.exit(1);
+    }
+    throw e;
+  }
+  console.log(
+    `ensure-openclaw-gateway-agent: fragment ${agentsFragmentPath} agentId=${agentId} primary=${primary} added=${added}`
+  );
+  runCompose();
+  process.exit(0);
+}
+
+const paths = [
+  process.env.OPENCLAW_RUNTIME_CONFIG_PATH,
+  process.env.OPENCLAW_CONFIG_PATH,
+].filter((p) => typeof p === 'string' && p.trim() !== '');
+
+const unique = [...new Set(paths.map((p) => p.trim()))];
+if (unique.length === 0) {
+  console.error('ensure-openclaw-gateway-agent: set OPENCLAW_RUNTIME_CONFIG_PATH and/or OPENCLAW_CONFIG_PATH');
+  process.exit(1);
 }
 
 let wrotePaths = 0;

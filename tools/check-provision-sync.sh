@@ -26,11 +26,21 @@ check_core_markers() {
   assert_has "${file}" "GOOGLE_API_KEY=\\$\\{GOOGLE_API_KEY\\}"
 }
 
+check_openclaw_fragment_markers() {
+  local file="$1"
+  assert_has "${file}" "OPENCLAW_FRAGMENTS_DIR"
+  assert_has "${file}" "OPENCLAW_RUNTIME_CONFIG_PATH"
+  assert_has "${file}" "openclaw-compose\\.mjs"
+  assert_has "${file}" "10-gateway-transport\\.json"
+}
+
 check_pair() {
   local left="$1"
   local right="$2"
   check_core_markers "${left}"
   check_core_markers "${right}"
+  check_openclaw_fragment_markers "${left}"
+  check_openclaw_fragment_markers "${right}"
   echo "provision-sync: ok core markers ${left##*/} <-> ${right##*/}"
 }
 

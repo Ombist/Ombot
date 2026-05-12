@@ -149,8 +149,9 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_REQUIRE_MIDDLEWARE_T
 
 [tools/provision-headless.sh](tools/provision-headless.sh) 供 Ombist iOS「新增機器」經 SSH 在非互動環境安裝 **nvm + Node 22**、`openclaw@latest`、clone 本 repo，並切到 **system-level + ombot service user**：
 
-- OpenClaw 設定寫入 `/etc/ombot/openclaw.json`（`gateway.bind: loopback`，僅 `127.0.0.1:18789`）。**單機／headless 佈署腳本**會執行 `tools/ensure-openclaw-gateway-agent.mjs`，自動在 `openclaw.json` 補上 **`agents.list`**（預設 id `default`，可覆寫 `OMBIST_GATEWAY_AGENT_ID`），並在 `ombot.env` 寫入 **`OPENCLAW_BRIDGE_AGENT_ID`**，無需登入伺服器查 `agents.list`。
-- Ombot 環境寫入 `/etc/ombot/ombot.env`。
+- **分域設定與單一有效檔**：佈署在 **`OPENCLAW_FRAGMENTS_DIR`**（預設 `/etc/ombot/openclaw.d`）建立排序後合併的 JSON 片段（例如 `10-gateway-transport.json`、`20-gateway-security.json`），由 **`tools/openclaw-compose.mjs`** 決定性 deep-merge（含 `plugins` 的 id 級合併）寫入 **`OPENCLAW_RUNTIME_CONFIG_PATH`**（預設 `~ombot/.openclaw/openclaw.json`），並複製到 **`OPENCLAW_CONFIG_PATH`**（`/etc/ombot/openclaw.json`）。Gateway wrapper 將 **`OPENCLAW_CONFIG_PATH` 指到 runtime 檔**，行程仍只讀一份有效 JSON。**`tools/ensure-openclaw-gateway-agent.mjs`** 在有片段目錄時只更新 **`30-ombist-gateway-agent.json`**（`agents`）並再執行 compose，不直接改最終檔。
+- **秘密與設定面**：Loopback Gateway token 等放在 **`20-gateway-security.json`** 片段（佈署時生成）；LLM 供應商金鑰優先經 **`ombot-admin route sync`** 的 `SYNC_OPENCLAW_AUTH_B64` 寫入 **`~/.openclaw/agents/<id>/agent/auth-profiles.json`**（不進 `openclaw.json`）；`OPENAI_*` 等亦可落在 **`ombot.env`**。同一 provider **建議只選一種落地**（auth-profile **或** env），避免雙份；`ombot-admin gateway config-drift` 可回報片段 hash、合成 hash 與磁碟是否一致、以及 env 與 auth profile 重疊等警告。
+- Ombot 環境寫入 `/etc/ombot/ombot.env`（含 `OPENCLAW_FRAGMENTS_DIR` 等）。
 - 建立 `systemd` 單元：`ombist-openclaw-gateway.service`、`ombist-ombot.service`（皆以 `User=ombot` 執行）。
 - 嘗試啟用主機防火牆（`ufw` / `iptables` / `nft`）封鎖外部入站 `tcp/18789`；若缺少工具，摘要會回 `warning=firewall_tool_missing`（降級安全模式）。
 - 腳本會輸出 `PROVISION_SUMMARY_BEGIN/END` 區段，含 `gateway_bind_ok`、service 狀態、`firewall_mode`，供 iOS 顯示成功或警告。

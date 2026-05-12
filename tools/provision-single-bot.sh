@@ -44,6 +44,7 @@ NGINX_SITE="/etc/nginx/sites-available/ombist-single-bot.conf"
 OMBOT_ENV_PATH="${OMBOT_ENV_PATH:-/etc/ombot/ombot.env}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
 OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH:-${OMBOT_HOME}/.openclaw/openclaw.json}"
+OPENCLAW_FRAGMENTS_DIR="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}"
 GW_SERVICE_PATH="/etc/systemd/system/ombist-openclaw-gateway.service"
 OMBOT_SERVICE_PATH="/etc/systemd/system/ombist-ombot.service"
 
@@ -307,8 +308,9 @@ run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 cd '${OMBROUTER_REPO_DIR}' && npm install && npm run build && npm install -g ."
 
-echo "ombist-provision-single-bot: OpenClaw config..."
-as_root tee "${OPENCLAW_CONFIG_PATH}" >/dev/null <<EOF
+echo "ombist-provision-single-bot: OpenClaw fragments + compose..."
+as_root mkdir -p "${OPENCLAW_FRAGMENTS_DIR}"
+as_root tee "${OPENCLAW_FRAGMENTS_DIR}/10-gateway-transport.json" >/dev/null <<EOF
 {
   "gateway": {
     "mode": "local",
@@ -317,41 +319,49 @@ as_root tee "${OPENCLAW_CONFIG_PATH}" >/dev/null <<EOF
   }
 }
 EOF
-as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
-as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
+as_root tee "${OPENCLAW_FRAGMENTS_DIR}/20-gateway-security.json" >/dev/null <<EOF
+{
+  "gateway": {
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  }
+}
+EOF
+as_root chown -R "root:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}"
+as_root chmod 775 "${OPENCLAW_FRAGMENTS_DIR}"
+as_root chmod 640 "${OPENCLAW_FRAGMENTS_DIR}/10-gateway-transport.json" "${OPENCLAW_FRAGMENTS_DIR}/20-gateway-security.json"
 
-echo "ombist-provision-single-bot: syncing OpenClaw runtime config under ${OPENCLAW_RUNTIME_CONFIG_PATH}..."
+echo "ombist-provision-single-bot: composing OpenClaw config from fragments..."
 as_root mkdir -p "$(dirname "${OPENCLAW_RUNTIME_CONFIG_PATH}")"
-as_root cp "${OPENCLAW_CONFIG_PATH}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
-as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
-as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
-
-echo "ombist-provision-single-bot: OpenClaw CLI config set gateway.mode local (runtime config)..."
 run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
-export OPENCLAW_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
-openclaw config set gateway.mode local; \
-openclaw config set gateway.auth.mode token; \
-openclaw config set gateway.auth.token '${OPENCLAW_GATEWAY_TOKEN}'" || {
-  echo "ombist-provision-single-bot: warning: openclaw config set gateway.mode local failed (gateway may stay on status=78/CONFIG)" >&2
+export OPENCLAW_FRAGMENTS_DIR='${OPENCLAW_FRAGMENTS_DIR}'; \
+export OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
+export OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}'; \
+export OPENCLAW_COMPOSE_USE_FLOCK=0; \
+node '${OMBOT_REPO_DIR}/tools/openclaw-compose.mjs'" || {
+  echo "ombist-provision-single-bot: warning: openclaw-compose failed (gateway may stay on status=78/CONFIG)" >&2
 }
 
 OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID:-default}"
 OMBIST_GATEWAY_AGENT_MODEL="${OMBIST_GATEWAY_AGENT_MODEL:-gpt-4o-mini}"
 echo "ombist-provision-single-bot: ensuring OpenClaw agents.list id=${OMBIST_GATEWAY_AGENT_ID} (model=${OMBIST_GATEWAY_AGENT_MODEL})..."
-# Merge only into the ombot-owned runtime copy; publish to /etc via as_root cp below (avoids root/sudo quirks on node).
 run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
 export OMBIST_GATEWAY_AGENT_ID='${OMBIST_GATEWAY_AGENT_ID}'; \
 export OMBIST_GATEWAY_AGENT_MODEL='${OMBIST_GATEWAY_AGENT_MODEL}'; \
+export OPENCLAW_FRAGMENTS_DIR='${OPENCLAW_FRAGMENTS_DIR}'; \
 export OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
-unset OPENCLAW_CONFIG_PATH; \
+export OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}'; \
+export OPENCLAW_COMPOSE_USE_FLOCK=0; \
 node '${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs'"
 as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
-as_root cp "${OPENCLAW_RUNTIME_CONFIG_PATH}" "${OPENCLAW_CONFIG_PATH}"
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
+as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombist-gateway-agent.json" 2>/dev/null || true
 
 {
   echo "PORT=${OMBOT_PORT}"
@@ -361,6 +371,7 @@ as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
   echo "MIDDLEWARE_WS_URL=wss://127.0.0.1:9/ws"
   echo "OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0"
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
+  echo "OPENCLAW_FRAGMENTS_DIR=${OPENCLAW_FRAGMENTS_DIR}"
   echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
   echo 'OPENCLAW_BRIDGE_OPERATOR_SCOPES=["operator.read","operator.write","operator.admin"]'
   echo "OPENCLAW_BRIDGE_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"

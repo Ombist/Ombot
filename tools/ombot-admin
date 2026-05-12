@@ -3,7 +3,7 @@
 # Install: /opt/ombot/bin/ombot-admin + /opt/ombot/bin/ombot-admin-lib/
 set -uo pipefail
 
-OMBOT_ADMIN_VERSION="1.1.0"
+OMBOT_ADMIN_VERSION="1.2.0"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="${ROOT}/ombot-admin-lib"
 
@@ -38,7 +38,7 @@ die() {
 # shellcheck source=/dev/null
 . "${LIB}/health-port.sh"
 # shellcheck source=/dev/null
-. "${LIB}/openclaw-config.sh"
+. "${LIB}/openclaw-compose.sh"
 # shellcheck source=/dev/null
 . "${LIB}/route-sync.sh"
 # shellcheck source=/dev/null
@@ -59,6 +59,7 @@ Usage:
   ombot-admin ombrouter probe [--json]
   ombot-admin ombrouter install [--pinned-ref <sha>] [--json]
   ombot-admin ombot health-port ensure-internal [--json]
+  ombot-admin openclaw compose [--dry-run] [--rollback] [--strict-keys] [--no-flock] [--json]
   ombot-admin openclaw config ensure-local [--json]
   ombot-admin gateway health-gates [--json]
   ombot-admin gateway config-drift [--json]
@@ -66,7 +67,7 @@ EOF
 }
 
 cmd_version() {
-  local caps='["tls","preflight","systemctl","route_sync","ombrouter","ombrouter_probe","health_port","openclaw_config","openai_env"]'
+  local caps='["tls","preflight","systemctl","route_sync","ombrouter","ombrouter_probe","health_port","openclaw_config","openclaw_compose","openai_env"]'
   local data
   data="$(printf '{"version":%s,"capabilities":%s}' "$(ombist_json_escape_string "${OMBOT_ADMIN_VERSION}")" "${caps}")"
   ombist_emit_envelope true "version" "ombot-admin ${OMBOT_ADMIN_VERSION}" "${data}" "[]" "[]"
@@ -245,8 +246,17 @@ main() {
       ombist_cmd_health_port_ensure_main
       ;;
     openclaw)
-      [[ "${args[1]:-}" == "config" && "${args[2]:-}" == "ensure-local" ]] || die "openclaw only supports config ensure-local"
-      ombist_cmd_openclaw_config_ensure_local_main
+      [[ ${#args[@]} -ge 2 ]] || die "openclaw needs subcommand"
+      case "${args[1]}" in
+        config)
+          [[ "${args[2]:-}" == "ensure-local" ]] || die "openclaw config only supports ensure-local"
+          ombist_cmd_openclaw_config_ensure_local_main
+          ;;
+        compose)
+          ombist_cmd_openclaw_compose_main "${args[@]:2}"
+          ;;
+        *) die "openclaw supports: config ensure-local | compose" ;;
+      esac
       ;;
     gateway)
       [[ ${#args[@]} -ge 2 ]] || die "gateway needs subcommand"
