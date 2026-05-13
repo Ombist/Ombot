@@ -25,7 +25,21 @@ ombist_cmd_route_sync_main() {
     ombot_home="/${ombot_home#./}"
   fi
   local patch_b64="${SYNC_OPENCLAW_PATCH_B64:-}"
-  local patch_target="${SYNC_OPENCLAW_PATCH_TARGET:-merged}"
+  local patch_target
+  local patch_target_inferred_fragment=false
+  if [[ -n "${SYNC_OPENCLAW_PATCH_TARGET:-}" ]]; then
+    patch_target="${SYNC_OPENCLAW_PATCH_TARGET}"
+  else
+    local frag_dir_default="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}"
+    if [[ -d "${frag_dir_default}" ]] && {
+      [[ -f "${frag_dir_default}/10-gateway-transport.json" ]] || [[ -f "${frag_dir_default}/20-gateway-security.json" ]]
+    }; then
+      patch_target="fragment"
+      patch_target_inferred_fragment=true
+    else
+      patch_target="merged"
+    fi
+  fi
   local cost_b64="${SYNC_COST_CONFIG_JSON_B64:-}"
   local cost_path="${SYNC_COST_CONFIG_PATH:-}"
   local auth_b64="${SYNC_OPENCLAW_AUTH_B64:-}"
@@ -304,14 +318,20 @@ NODE
     fi
   fi
 
-  local data summary
-  data="$(printf '{"didPatch":%s,"didCostConfig":%s,"didAuthSync":%s,"costConfigPath":%s,"gatewayRestart":%s,"openclawPatchTarget":%s}' \
+  local data summary inferred_json
+  if [[ "${patch_target_inferred_fragment}" == "true" ]]; then
+    inferred_json="true"
+  else
+    inferred_json="false"
+  fi
+  data="$(printf '{"didPatch":%s,"didCostConfig":%s,"didAuthSync":%s,"costConfigPath":%s,"gatewayRestart":%s,"openclawPatchTarget":%s,"openclawPatchTargetInferredFragment":%s}' \
     "${did_patch}" \
     "${did_cost}" \
     "${did_auth}" \
     "$(ombist_json_escape_string "${cost_path}")" \
     "$(ombist_json_escape_string "${gw_restart}")" \
-    "$(ombist_json_escape_string "${patch_target}")")"
+    "$(ombist_json_escape_string "${patch_target}")" \
+    "${inferred_json}")"
   summary="ombist_route_sync_ok; gateway=${gw_restart}"
   ombist_emit_envelope true "route_sync" "${summary}" "${data}" "[]" "[]"
 }

@@ -3,7 +3,7 @@
 # Install: /opt/ombot/bin/ombot-admin + /opt/ombot/bin/ombot-admin-lib/
 set -uo pipefail
 
-OMBOT_ADMIN_VERSION="1.2.0"
+OMBOT_ADMIN_VERSION="1.5.0"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="${ROOT}/ombot-admin-lib"
 
@@ -32,9 +32,9 @@ die() {
 # shellcheck source=/dev/null
 . "${LIB}/systemctl.sh"
 # shellcheck source=/dev/null
-. "${LIB}/ombrouter.sh"
+. "${LIB}/router-install.sh"
 # shellcheck source=/dev/null
-. "${LIB}/ombrouter-probe.sh"
+. "${LIB}/router-probe.sh"
 # shellcheck source=/dev/null
 . "${LIB}/health-port.sh"
 # shellcheck source=/dev/null
@@ -56,8 +56,8 @@ Usage:
   ombot-admin systemctl monitor [--json]
   ombot-admin route sync [--json]
   ombot-admin openai env apply [--json]
-  ombot-admin ombrouter probe [--json]
-  ombot-admin ombrouter install [--pinned-ref <sha>] [--json]
+  ombot-admin router probe [--json]
+  ombot-admin router install [--pinned-ref <sha>] [--json]
   ombot-admin ombot health-port ensure-internal [--json]
   ombot-admin openclaw compose [--dry-run] [--rollback] [--strict-keys] [--no-flock] [--json]
   ombot-admin openclaw config ensure-local [--json]
@@ -67,7 +67,7 @@ EOF
 }
 
 cmd_version() {
-  local caps='["tls","preflight","systemctl","route_sync","ombrouter","ombrouter_probe","health_port","openclaw_config","openclaw_compose","openai_env"]'
+  local caps='["tls","preflight","systemctl","route_sync","router","router_probe","health_port","openclaw_config","openclaw_compose","openai_env"]'
   local data
   data="$(printf '{"version":%s,"capabilities":%s}' "$(ombist_json_escape_string "${OMBOT_ADMIN_VERSION}")" "${caps}")"
   ombist_emit_envelope true "version" "ombot-admin ${OMBOT_ADMIN_VERSION}" "${data}" "[]" "[]"
@@ -217,8 +217,8 @@ main() {
       [[ "${args[1]:-}" == "env" && "${args[2]:-}" == "apply" ]] || die "openai only supports env apply"
       ombist_cmd_openai_env_apply_main
       ;;
-    ombrouter)
-      [[ ${#args[@]} -ge 2 ]] || die "ombrouter needs subcommand"
+    router)
+      [[ ${#args[@]} -ge 2 ]] || die "router needs subcommand"
       case "${args[1]}" in
         install)
           local pin=""
@@ -231,13 +231,13 @@ main() {
               i=$((i + 1))
             fi
           done
-          ombist_cmd_ombrouter_install_main "${pin}"
+          ombist_cmd_router_install_main "${pin}"
           ;;
         probe)
-          ombist_cmd_ombrouter_probe_main
+          ombist_cmd_router_probe_main
           ;;
         *)
-          die "ombrouter supports: install | probe"
+          die "router supports: install | probe"
           ;;
       esac
       ;;

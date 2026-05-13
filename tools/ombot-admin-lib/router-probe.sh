@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Probe OmbRouter presence/version using OpenClaw config + proxy reachability.
+# Probe router presence/version using OpenClaw config + proxy reachability (ombot-admin path; implemented in Ombot).
 # shellcheck shell=bash
 
-ombist_cmd_ombrouter_probe_main() {
+ombist_cmd_router_probe_main() {
   local cfg="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
   local proxy_b64="${OMBIST_PROBE_PROXY_B64:-}"
   local min_b64="${OMBIST_MIN_VERSION_B64:-}"
@@ -24,7 +24,7 @@ ombist_cmd_ombrouter_probe_main() {
   if [[ -z "${node_bin}" ]]; then
     local err
     err="$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "node not in PATH")")"
-    ombist_emit_envelope false "ombrouter_probe" "node not found." "{}" "[]" "${err}"
+    ombist_emit_envelope false "router_probe" "node not found." "{}" "[]" "${err}"
     return 0
   fi
 
@@ -91,7 +91,7 @@ if (plugin || curlOk) {
     process.stdout.write(JSON.stringify({ status: 'presentOk', version: ver || null, detail: '' }));
   }
 } else {
-  process.stdout.write(JSON.stringify({ status: 'missing', version: null, detail: '未偵測到 ombrouter 外掛且 proxy 無法取得 /v1/models。' }));
+  process.stdout.write(JSON.stringify({ status: 'missing', version: null, detail: '未偵測到 OpenClaw router 外掛且 proxy 無法取得 /v1/models。' }));
 }
 NODE
   )"
@@ -100,7 +100,7 @@ NODE
   if [[ "${rc}" -ne 0 ]] || [[ -z "${out}" ]] || [[ "${out}" != \{* ]]; then
     local err
     err="$(printf '[{"code":"PROBE_FAILED","message":%s}]' "$(ombist_json_escape_string "probe script failed")")"
-    ombist_emit_envelope false "ombrouter_probe" "probe failed." "{}" "[]" "${err}"
+    ombist_emit_envelope false "router_probe" "probe failed." "{}" "[]" "${err}"
     return 0
   fi
 
@@ -111,7 +111,7 @@ NODE
   if [[ -z "${status}" ]]; then
     local err
     err="$(printf '[{"code":"PROBE_FAILED","message":%s}]' "$(ombist_json_escape_string "probe output missing status")")"
-    ombist_emit_envelope false "ombrouter_probe" "probe failed." "{}" "[]" "${err}"
+    ombist_emit_envelope false "router_probe" "probe failed." "{}" "[]" "${err}"
     return 0
   fi
 
@@ -120,6 +120,6 @@ NODE
     "$(ombist_json_escape_string "${status}")" \
     "$(ombist_json_escape_string "${version}")" \
     "$(ombist_json_escape_string "${detail}")")"
-  summary="ombrouter probe: ${status}"
-  ombist_emit_envelope true "ombrouter_probe" "${summary}" "${data}" "[]" "[]"
+  summary="router probe: ${status}"
+  ombist_emit_envelope true "router_probe" "${summary}" "${data}" "[]" "[]"
 }

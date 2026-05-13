@@ -6,6 +6,7 @@
 #   OMBIST_WSS_PORT        — Nginx TLS listen port (e.g. 443 or 8443)
 #   OPENCLAW_MACHINE_SEED  — required
 # Optional: OMBOT_PORT (default 8082), OMBOT_HEALTH_PORT, OMBOT_GIT_URL, OMBROUTER_GIT_URL, OPENCLAW_GATEWAY_PORT, etc.
+# Optional: OMBIST_INSTALL_OMBROUTER=1 (default). Set to 0 to skip OmbRouter clone/build/npm -g (official mode without router).
 # Optional: OMBIST_GATEWAY_AGENT_ID (default default), OMBIST_GATEWAY_AGENT_MODEL (default gpt-4o-mini) — auto-merge into openclaw.json agents.list + ombot.env bridge ids.
 
 set -euo pipefail
@@ -297,16 +298,21 @@ fi
 echo "ombist-provision-single-bot: updating Ombot dependencies (repo already cloned)..."
 run_as_ombot "npm --prefix '${OMBOT_REPO_DIR}' install --omit=dev"
 
-echo "ombist-provision-single-bot: OmbRouter (without OpenClaw plugin registration)..."
-if as_root test -d "${OMBROUTER_REPO_DIR}/.git"; then
-  run_as_ombot "git -C '${OMBROUTER_REPO_DIR}' pull --ff-only"
-else
-  as_root rm -rf "${OMBROUTER_REPO_DIR}"
-  run_as_ombot "git clone --depth 1 '${OMBROUTER_GIT_URL}' '${OMBROUTER_REPO_DIR}'"
-fi
-run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
+: "${OMBIST_INSTALL_OMBROUTER:=1}"
+if [[ "${OMBIST_INSTALL_OMBROUTER}" != "0" ]]; then
+  echo "ombist-provision-single-bot: OmbRouter (without OpenClaw plugin registration)..."
+  if as_root test -d "${OMBROUTER_REPO_DIR}/.git"; then
+    run_as_ombot "git -C '${OMBROUTER_REPO_DIR}' pull --ff-only"
+  else
+    as_root rm -rf "${OMBROUTER_REPO_DIR}"
+    run_as_ombot "git clone --depth 1 '${OMBROUTER_GIT_URL}' '${OMBROUTER_REPO_DIR}'"
+  fi
+  run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 cd '${OMBROUTER_REPO_DIR}' && npm install && npm run build && npm install -g ."
+else
+  echo "ombist-provision-single-bot: skipping OmbRouter (OMBIST_INSTALL_OMBROUTER=0)."
+fi
 
 echo "ombist-provision-single-bot: OpenClaw fragments + compose..."
 as_root mkdir -p "${OPENCLAW_FRAGMENTS_DIR}"
