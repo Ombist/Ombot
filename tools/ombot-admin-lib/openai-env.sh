@@ -80,15 +80,20 @@ NODE
   ombist_as_root chmod 640 "${env_path}" >/dev/null 2>&1 || true
   ombist_as_root chown "root:${ombot_group}" "${env_path}" >/dev/null 2>&1 || ombist_as_root chown root:root "${env_path}" >/dev/null 2>&1 || true
 
-  local gw_state="no_unit"
-  local ombot_state="no_unit"
-  if ombist_as_root systemctl list-unit-files 2>/dev/null | grep -q '^ombist-openclaw-gateway.service'; then
-    ombist_as_root systemctl restart ombist-openclaw-gateway.service >/dev/null 2>&1 || true
-    gw_state="$(ombist_as_root systemctl is-active ombist-openclaw-gateway.service 2>/dev/null || echo unknown)"
+  # Match gateway-stability / systemctl_monitor: list-unit-files greps miss legacy unit names
+  # and some systemd outputs; pick_unit + `systemctl cat` is reliable.
+  local gw_unit ombot_unit gw_state ombot_state
+  gw_unit="$(ombist_gateway_pick_unit "ombist-openclaw-gateway.service" "openclaw-gateway@Ombist_IOS.service")"
+  ombot_unit="$(ombist_gateway_pick_unit "ombist-ombot.service" "ombot.service")"
+  gw_state="no_unit"
+  ombot_state="no_unit"
+  if ombist_as_root systemctl --no-pager cat "${gw_unit}" >/dev/null 2>&1; then
+    ombist_as_root systemctl restart "${gw_unit}" >/dev/null 2>&1 || true
+    gw_state="$(ombist_as_root systemctl is-active "${gw_unit}" 2>/dev/null || echo unknown)"
   fi
-  if ombist_as_root systemctl list-unit-files 2>/dev/null | grep -q '^ombist-ombot.service'; then
-    ombist_as_root systemctl restart ombist-ombot.service >/dev/null 2>&1 || true
-    ombot_state="$(ombist_as_root systemctl is-active ombist-ombot.service 2>/dev/null || echo unknown)"
+  if ombist_as_root systemctl --no-pager cat "${ombot_unit}" >/dev/null 2>&1; then
+    ombist_as_root systemctl restart "${ombot_unit}" >/dev/null 2>&1 || true
+    ombot_state="$(ombist_as_root systemctl is-active "${ombot_unit}" 2>/dev/null || echo unknown)"
   fi
 
   local data summary
