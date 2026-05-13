@@ -260,30 +260,32 @@ fi
 
 echo "ombist-provision: composing OpenClaw config from fragments..."
 as_root mkdir -p "$(dirname "${OPENCLAW_RUNTIME_CONFIG_PATH}")"
-run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
-export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
-export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
-export OPENCLAW_FRAGMENTS_DIR='${OPENCLAW_FRAGMENTS_DIR}'; \
-export OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
-export OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}'; \
-export OPENCLAW_COMPOSE_USE_FLOCK=0; \
-node '${OMBOT_REPO_DIR}/tools/openclaw-compose.mjs'" || {
+# Compose writes OPENCLAW_CONFIG_PATH under /etc (root-only); use ombot's nvm node with elevated privileges.
+OMBIST_NODE_BIN="$(run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; command -v node" | head -n1 | tr -d '\r')"
+if [[ -z "${OMBIST_NODE_BIN}" || ! -x "${OMBIST_NODE_BIN}" ]]; then
+  echo "ombist-provision: failed to resolve node binary for openclaw-compose" >&2
+  exit 1
+fi
+as_root env \
+  OPENCLAW_FRAGMENTS_DIR="${OPENCLAW_FRAGMENTS_DIR}" \
+  OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH}" \
+  OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}" \
+  OPENCLAW_COMPOSE_USE_FLOCK=0 \
+  "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/openclaw-compose.mjs" || {
   echo "ombist-provision: warning: openclaw-compose failed (gateway may stay on status=78/CONFIG)" >&2
 }
 
 OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID:-default}"
 OMBIST_GATEWAY_AGENT_MODEL="${OMBIST_GATEWAY_AGENT_MODEL:-gpt-4o-mini}"
 echo "ombist-provision: ensuring OpenClaw agents.list id=${OMBIST_GATEWAY_AGENT_ID} (model=${OMBIST_GATEWAY_AGENT_MODEL})..."
-run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
-export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
-export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
-export OMBIST_GATEWAY_AGENT_ID='${OMBIST_GATEWAY_AGENT_ID}'; \
-export OMBIST_GATEWAY_AGENT_MODEL='${OMBIST_GATEWAY_AGENT_MODEL}'; \
-export OPENCLAW_FRAGMENTS_DIR='${OPENCLAW_FRAGMENTS_DIR}'; \
-export OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
-export OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}'; \
-export OPENCLAW_COMPOSE_USE_FLOCK=0; \
-node '${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs'"
+as_root env \
+  OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID}" \
+  OMBIST_GATEWAY_AGENT_MODEL="${OMBIST_GATEWAY_AGENT_MODEL}" \
+  OPENCLAW_FRAGMENTS_DIR="${OPENCLAW_FRAGMENTS_DIR}" \
+  OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH}" \
+  OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}" \
+  OPENCLAW_COMPOSE_USE_FLOCK=0 \
+  "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs"
 as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"

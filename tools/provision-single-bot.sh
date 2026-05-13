@@ -335,28 +335,28 @@ as_root chmod 640 "${OPENCLAW_FRAGMENTS_DIR}/10-gateway-transport.json" "${OPENC
 
 echo "ombist-provision-single-bot: composing OpenClaw config from fragments..."
 as_root mkdir -p "$(dirname "${OPENCLAW_RUNTIME_CONFIG_PATH}")"
-run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
-export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
-export OPENCLAW_FRAGMENTS_DIR='${OPENCLAW_FRAGMENTS_DIR}'; \
-export OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
-export OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}'; \
-export OPENCLAW_COMPOSE_USE_FLOCK=0; \
-node '${OMBOT_REPO_DIR}/tools/openclaw-compose.mjs'" || {
+# Compose writes OPENCLAW_CONFIG_PATH under /etc (root-only); runtime path is chowned to ombot below.
+OMBIST_NODE_BIN="$(command -v node)"
+as_root env \
+  OPENCLAW_FRAGMENTS_DIR="${OPENCLAW_FRAGMENTS_DIR}" \
+  OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH}" \
+  OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}" \
+  OPENCLAW_COMPOSE_USE_FLOCK=0 \
+  "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/openclaw-compose.mjs" || {
   echo "ombist-provision-single-bot: warning: openclaw-compose failed (gateway may stay on status=78/CONFIG)" >&2
 }
 
 OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID:-default}"
 OMBIST_GATEWAY_AGENT_MODEL="${OMBIST_GATEWAY_AGENT_MODEL:-gpt-4o-mini}"
 echo "ombist-provision-single-bot: ensuring OpenClaw agents.list id=${OMBIST_GATEWAY_AGENT_ID} (model=${OMBIST_GATEWAY_AGENT_MODEL})..."
-run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
-export PATH=\"\${NPM_CONFIG_PREFIX}/bin:/usr/bin:/bin\"; \
-export OMBIST_GATEWAY_AGENT_ID='${OMBIST_GATEWAY_AGENT_ID}'; \
-export OMBIST_GATEWAY_AGENT_MODEL='${OMBIST_GATEWAY_AGENT_MODEL}'; \
-export OPENCLAW_FRAGMENTS_DIR='${OPENCLAW_FRAGMENTS_DIR}'; \
-export OPENCLAW_RUNTIME_CONFIG_PATH='${OPENCLAW_RUNTIME_CONFIG_PATH}'; \
-export OPENCLAW_CONFIG_PATH='${OPENCLAW_CONFIG_PATH}'; \
-export OPENCLAW_COMPOSE_USE_FLOCK=0; \
-node '${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs'"
+as_root env \
+  OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID}" \
+  OMBIST_GATEWAY_AGENT_MODEL="${OMBIST_GATEWAY_AGENT_MODEL}" \
+  OPENCLAW_FRAGMENTS_DIR="${OPENCLAW_FRAGMENTS_DIR}" \
+  OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH}" \
+  OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}" \
+  OPENCLAW_COMPOSE_USE_FLOCK=0 \
+  "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs"
 as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
