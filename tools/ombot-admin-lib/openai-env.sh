@@ -100,6 +100,6 @@ NODE
   data="$(printf '{"gatewayState":%s,"ombotState":%s}' \
     "$(ombist_json_escape_string "${gw_state}")" \
     "$(ombist_json_escape_string "${ombot_state}")")"
-  summary="OpenAI provider env applied; gateway=${gw_state}; ombot=${ombot_state}"
+  summary="OpenAI provider env applied; gateway=${gw_state}; ombot=${ombot_state}. openclaw.json unchanged (agent models: use ombot-admin route sync or edit OPENCLAW_FRAGMENTS_DIR / runtime config)."
   ombist_emit_envelope true "openai_env_apply" "${summary}" "${data}" "[]" "[]"
 }
