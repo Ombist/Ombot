@@ -20,6 +20,7 @@ import {
   gatewayBridgeGatewayToPhoneTotal,
 } from './metrics.js';
 import { classifyGatewayError } from './gatewayErrorClassifier.js';
+import { scheduleOpenClawSelfHealOnGatewayTransportError } from './openclawConfigSelfHeal.js';
 import { ProviderFallbackClient } from './providerFallbackClient.js';
 import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
 
@@ -632,6 +633,7 @@ export class OpenClawGatewayBridge {
     this.gatewayWs.on('error', (err) => {
       gatewayBridgeErrorsTotal.inc();
       logger.error('gateway_bridge_ws_error', { err: err.message });
+      scheduleOpenClawSelfHealOnGatewayTransportError(err, 'gateway_bridge_ws_error');
     });
   }
 

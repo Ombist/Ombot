@@ -15,6 +15,10 @@ import {
   startOpenClawGatewayBridge,
   stopOpenClawGatewayBridge,
 } from './openclawGatewayBridge.js';
+import {
+  isOpenClawSelfHealEnabled,
+  runOpenClawConfigSelfHeal,
+} from './openclawConfigSelfHeal.js';
 
 const PORT = Number(process.env.PORT) || 8080;
 // Default 8082 so we do not collide with Ombers MACHINE_PORT (8081) when PORT=8080.
@@ -113,6 +117,11 @@ const wss = new WebSocketServer({ host: WS_LISTEN_HOST, port: PORT, path: '/ws' 
 
 wss.on('listening', () => {
   logger.info('ws_server_listening', { host: WS_LISTEN_HOST, port: PORT, path: '/ws' });
+  if (SINGLE_CLIENT_MODE && isOpenClawSelfHealEnabled()) {
+    void runOpenClawConfigSelfHeal({ trigger: 'ombot_startup', force: true }).catch((err) => {
+      logger.error('openclaw_self_heal_startup_failed', { err: err?.message || String(err) });
+    });
+  }
 });
 
 if (shouldStartGatewayBridge()) {

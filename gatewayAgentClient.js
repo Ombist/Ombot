@@ -16,6 +16,7 @@ import {
   gatewayBridgeRejectTotal,
 } from './metrics.js';
 import { classifyGatewayError } from './gatewayErrorClassifier.js';
+import { scheduleOpenClawSelfHealOnGatewayTransportError } from './openclawConfigSelfHeal.js';
 import { ProviderFallbackClient } from './providerFallbackClient.js';
 import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
 
@@ -567,6 +568,7 @@ export class GatewayAgentClient {
     this.gatewayWs.on('error', (err) => {
       gatewayBridgeErrorsTotal.inc();
       logger.error('single_client_gateway_ws_error', { err: err.message });
+      scheduleOpenClawSelfHealOnGatewayTransportError(err, 'single_client_gateway_ws_error');
       try {
         this.onError(err);
       } catch {

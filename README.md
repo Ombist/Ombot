@@ -230,6 +230,21 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_FALLBACK_TIMEOUT_MS` | `45000` | Timeout for fallback provider completion call |
 | `OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID` | same as `OPENCLAW_BRIDGE_AGENT_ID` | Gateway `agent` params `agentId` on each turn |
 | `OPENCLAW_BRIDGE_REQ_TIMEOUT_MS` | `120000` | Per-turn timeout waiting for Gateway `res` |
+| `OPENCLAW_SINGLE_CLIENT_MODE` | (unset) | `1` for direct Phone↔Ombot WSS (no Ombers middleware path) |
+| `OPENCLAW_SELF_HEAL` | follows `OPENCLAW_SINGLE_CLIENT_MODE` | `1`/`true`: auto-recompose `openclaw.d`→runtime and optionally restart gateway when config drift or `ECONNREFUSED` on gateway URL |
+| `OPENCLAW_SELF_HEAL_COOLDOWN_MS` | `120000` | Minimum interval between self-heal runs (except startup `force`) |
+| `OPENCLAW_SELF_HEAL_RESTART_GATEWAY` | `1` | `0` to only recompose runtime JSON without `sudo systemctl restart` |
+
+### OpenClaw 設定自我修復（單 BOT）
+
+當存在 `/etc/ombot/openclaw.d` 且 runtime `openclaw.json` 缺失、損壞或與片段合成結果不一致時，Ombot 會：
+
+1. **啟動時**（`OPENCLAW_SINGLE_CLIENT_MODE=1` 且 self-heal 啟用）執行 `openclaw-compose` 修復 runtime。
+2. **連線 Gateway 出現傳輸錯誤**（如 `ECONNREFUSED 127.0.0.1:18789`）時在冷卻時間後再次嘗試 compose +（可選）重啟 `ombist-openclaw-gateway.service`。
+
+重啟 Gateway 需要 **`ombot` 使用者能 `sudo -n systemctl restart ombist-openclaw-gateway.service`**（僅此一條即可）。若無 sudo，仍會寫好 runtime，請手動重啟 gateway unit。
+
+日誌關鍵字：`openclaw_self_heal_start`、`openclaw_self_heal_compose_ok`、`openclaw_self_heal_gateway_restarted`。
 
 中繼 Nginx（WSS / mTLS）整體準備與切換：[docs/relay-nginx-mtls-prep.md](../docs/relay-nginx-mtls-prep.md)（含 PKI、staging、`optional`→`on`、iOS 決策與 rollback）。
 
