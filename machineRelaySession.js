@@ -5,6 +5,7 @@ import { loadChatroomKeysSync, saveChatroomKeysSync } from './chatroomStorage.js
 import { hexToBytes } from './ed25519.js';
 import { logger } from './logger.js';
 import { GatewayAgentClient } from './gatewayAgentClient.js';
+import { scheduleOpenClawSelfHealOnGatewayUnavailable } from './openclawConfigSelfHeal.js';
 import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
 import {
   capabilityRejectTotal,
@@ -564,6 +565,9 @@ export class MachineRelaySession {
       return true;
     }
     this._gatewayClient.ensureConnected();
+    if (!this._gatewayClient.isReady()) {
+      scheduleOpenClawSelfHealOnGatewayUnavailable('user_turn_gateway_not_ready');
+    }
     const fromParams =
       json.params &&
       typeof json.params === 'object' &&

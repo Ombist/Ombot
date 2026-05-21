@@ -1,8 +1,8 @@
 /**
- * Self-heal OpenClaw config when fragments exist but runtime JSON is missing, invalid, or out of sync.
- * Optionally restarts ombist-openclaw-gateway.service (requires passwordless sudo).
+ * Self-heal OpenClaw: recompose fragments → runtime, restart gateway when port is down or config drift.
  */
 import fs from 'fs';
+import net from 'net';
 import path from 'path';
 import crypto from 'crypto';
 import { spawnSync } from 'child_process';
@@ -17,6 +17,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let lastHealAt = 0;
 /** @type {Promise<{ ok: boolean; actions: string[]; reason?: string }> | null} */
 let healInFlight = null;
+/** @type {ReturnType<typeof setInterval> | null} */
+let periodicTimer = null;
 
 function envTruthy(name, defaultWhenUnset = false) {
   const raw = process.env[name];
@@ -36,6 +38,16 @@ export function isOpenClawSelfHealEnabled() {
 function cooldownMs() {
   const n = Number(process.env.OPENCLAW_SELF_HEAL_COOLDOWN_MS ?? 120_000);
   return Number.isFinite(n) && n >= 10_000 ? n : 120_000;
+}
+
+function periodicIntervalMs() {
+  const n = Number(process.env.OPENCLAW_SELF_HEAL_INTERVAL_MS ?? 180_000);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(60_000, n);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function sha256Hex(buf) {
@@ -90,6 +102,87 @@ function resolveConfigPaths() {
   return { fragmentsDir, runtimePath, etcPath };
 }
 
+/** @returns {string} */
+function readRuntimeGatewayMode(runtimePath) {
+  if (!runtimePath || !fs.existsSync(runtimePath)) return '';
+  try {
+    const j = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
+    return String(j?.gateway?.mode || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Ensure `10-gateway-transport.json` declares gateway.mode=local before compose.
+ * @returns {{ patched: boolean; path?: string }}
+ */
+function ensureGatewayModeLocalInFragments(fragmentsDir) {
+  const transportPath = path.join(fragmentsDir, '10-gateway-transport.json');
+  if (!fs.existsSync(transportPath) || !pathWritable(transportPath)) {
+    return { patched: false };
+  }
+  try {
+    const j = JSON.parse(fs.readFileSync(transportPath, 'utf8'));
+    if (!j.gateway || typeof j.gateway !== 'object' || Array.isArray(j.gateway)) {
+      j.gateway = {};
+    }
+    if (j.gateway.mode === 'local') {
+      return { patched: false, path: transportPath };
+    }
+    j.gateway.mode = 'local';
+    const tmp = `${transportPath}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, `${JSON.stringify(j, null, 2)}\n`);
+    fs.renameSync(tmp, transportPath);
+    return { patched: true, path: transportPath };
+  } catch (err) {
+    logger.warn('openclaw_self_heal_fragment_mode_patch_failed', {
+      path: transportPath,
+      err: err?.message || String(err),
+    });
+    return { patched: false };
+  }
+}
+
+/** @returns {{ host: string; port: number; url: string }} */
+export function parseGatewayLoopbackTarget() {
+  const url = (process.env.OPENCLAW_GATEWAY_URL || 'ws://127.0.0.1:18789').trim();
+  try {
+    const u = new URL(url);
+    const host = u.hostname || '127.0.0.1';
+    const port = Number(u.port || (u.protocol === 'wss:' ? 443 : 80));
+    return { host, port: Number.isFinite(port) ? port : 18789, url };
+  } catch {
+    return { host: '127.0.0.1', port: 18789, url };
+  }
+}
+
+/**
+ * TCP probe (Gateway WS listens on same port).
+ * @param {number} [timeoutMs]
+ */
+export function probeGatewayLoopback(timeoutMs = 2000) {
+  const { host, port, url } = parseGatewayLoopbackTarget();
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port });
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve({ ...result, host, port, url });
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish({ ok: true }));
+    socket.once('timeout', () => finish({ ok: false, error: 'timeout' }));
+    socket.once('error', (err) => finish({ ok: false, error: err?.message || String(err) }));
+  });
+}
+
 /**
  * @returns {{ needsCompose: boolean; reason: string; fragmentCount: number; composedMatchesRuntime: boolean | null }}
  */
@@ -128,10 +221,8 @@ export function assessOpenClawConfigHealth() {
     };
   }
 
-  let runtimeHash = '';
   try {
     JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
-    runtimeHash = sha256Hex(fs.readFileSync(runtimePath));
   } catch (err) {
     return {
       needsCompose: true,
@@ -141,6 +232,7 @@ export function assessOpenClawConfigHealth() {
     };
   }
 
+  const runtimeHash = sha256Hex(fs.readFileSync(runtimePath));
   const matches = composedHash === runtimeHash;
   if (!matches) {
     return {
@@ -151,14 +243,7 @@ export function assessOpenClawConfigHealth() {
     };
   }
 
-  const mode = (() => {
-    try {
-      const j = JSON.parse(fs.readFileSync(runtimePath, 'utf8'));
-      return String(j?.gateway?.mode || '').trim();
-    } catch {
-      return '';
-    }
-  })();
+  const mode = readRuntimeGatewayMode(runtimePath);
   if (mode !== 'local') {
     return {
       needsCompose: true,
@@ -173,6 +258,22 @@ export function assessOpenClawConfigHealth() {
     reason: 'ok',
     fragmentCount: files.length,
     composedMatchesRuntime: true,
+  };
+}
+
+/** Snapshot for /readyz and operators. */
+export async function getOpenClawSelfHealStatus() {
+  const { runtimePath } = resolveConfigPaths();
+  const config = assessOpenClawConfigHealth();
+  const loopback = await probeGatewayLoopback(1500);
+  const gatewayMode = readRuntimeGatewayMode(runtimePath);
+  return {
+    enabled: isOpenClawSelfHealEnabled(),
+    config,
+    gatewayMode: gatewayMode || null,
+    gatewayModeOk: gatewayMode === 'local',
+    gatewayLoopback: loopback,
+    gatewayReachable: loopback.ok,
   };
 }
 
@@ -239,7 +340,7 @@ function tryRestartGatewayService() {
  * @param {object} [opts]
  * @param {string} [opts.trigger]
  * @param {boolean} [opts.force] — ignore cooldown
- * @param {boolean} [opts.restartGateway] — default true when compose ran
+ * @param {boolean} [opts.restartGateway] — try systemctl restart when port down or after compose
  */
 export async function runOpenClawConfigSelfHeal(opts = {}) {
   if (!isOpenClawSelfHealEnabled()) {
@@ -260,10 +361,17 @@ export async function runOpenClawConfigSelfHeal(opts = {}) {
     const trigger = opts.trigger || 'manual';
     logger.info('openclaw_self_heal_start', { trigger });
 
-    const health = assessOpenClawConfigHealth();
+    const { fragmentsDir } = resolveConfigPaths();
+    let health = assessOpenClawConfigHealth();
     let composed = false;
 
     if (health.needsCompose) {
+      const modePatch = ensureGatewayModeLocalInFragments(fragmentsDir);
+      if (modePatch.patched) {
+        actions.push('fragment_mode_patched_local');
+        logger.info('openclaw_self_heal_fragment_mode_local', { path: modePatch.path });
+        health = assessOpenClawConfigHealth();
+      }
       const composeResult = runCompose();
       if (composeResult.ok) {
         composed = true;
@@ -287,15 +395,35 @@ export async function runOpenClawConfigSelfHeal(opts = {}) {
       actions.push('config_ok');
     }
 
-    const shouldRestart =
-      opts.restartGateway !== false && (composed || health.reason === 'runtime_missing');
-    if (shouldRestart) {
+    let probe = await probeGatewayLoopback(2000);
+    if (!probe.ok) {
+      actions.push(`gateway_port_down:${probe.error || 'closed'}`);
+    }
+
+    const wantRestart =
+      opts.restartGateway !== false &&
+      (composed || health.reason === 'runtime_missing' || !probe.ok);
+
+    if (wantRestart) {
       const restart = tryRestartGatewayService();
       if (restart.skipped) {
         actions.push('restart_skipped');
       } else if (restart.ok) {
         actions.push(`gateway_restarted:${restart.unit}`);
         logger.info('openclaw_self_heal_gateway_restarted', { unit: restart.unit, trigger });
+        await sleep(2500);
+        probe = await probeGatewayLoopback(3000);
+        if (probe.ok) {
+          actions.push('gateway_port_up');
+        } else {
+          actions.push(`gateway_still_down:${probe.error || 'closed'}`);
+          logger.warn('openclaw_self_heal_gateway_still_down', {
+            trigger,
+            error: probe.error,
+            host: probe.host,
+            port: probe.port,
+          });
+        }
       } else {
         actions.push('gateway_restart_failed');
         logger.warn('openclaw_self_heal_gateway_restart_failed', {
@@ -307,9 +435,27 @@ export async function runOpenClawConfigSelfHeal(opts = {}) {
     }
 
     lastHealAt = Date.now();
-    const ok = !actions.includes('compose_failed');
-    logger.info('openclaw_self_heal_done', { trigger, ok, actions });
-    return { ok, actions, reason: health.reason };
+    const ok =
+      !actions.includes('compose_failed') &&
+      !actions.some((a) => a.startsWith('gateway_still_down'));
+    const { runtimePath } = resolveConfigPaths();
+    const gatewayMode = readRuntimeGatewayMode(runtimePath);
+    logger.info('openclaw_self_heal_done', {
+      trigger,
+      ok,
+      actions,
+      gatewayReachable: probe.ok,
+      gatewayMode: gatewayMode || '(missing)',
+      gatewayModeOk: gatewayMode === 'local',
+    });
+    return {
+      ok,
+      actions,
+      reason: health.reason,
+      gatewayReachable: probe.ok,
+      gatewayMode,
+      gatewayModeOk: gatewayMode === 'local',
+    };
   })();
 
   try {
@@ -329,13 +475,47 @@ export function scheduleOpenClawSelfHealOnGatewayTransportError(errorLike, trigg
   const classified = classifyGatewayError(errorLike);
   if (classified.category !== 'network') return;
 
+  void runOpenClawConfigSelfHeal({ trigger, restartGateway: true, force: false }).catch((err) => {
+    logger.error('openclaw_self_heal_unhandled', { err: err?.message || String(err) });
+  });
+}
+
+/**
+ * Before/after user turn when gateway WS is not ready (config may be fine; service down).
+ */
+export function scheduleOpenClawSelfHealOnGatewayUnavailable(trigger = 'gateway_unavailable') {
+  if (!isOpenClawSelfHealEnabled()) return;
   void runOpenClawConfigSelfHeal({ trigger, restartGateway: true }).catch((err) => {
     logger.error('openclaw_self_heal_unhandled', { err: err?.message || String(err) });
   });
+}
+
+/** Periodic compose + port check (single-bot deployments). */
+export function startPeriodicOpenClawSelfHeal() {
+  stopPeriodicOpenClawSelfHeal();
+  if (!isOpenClawSelfHealEnabled()) return;
+  const interval = periodicIntervalMs();
+  if (interval <= 0) return;
+
+  periodicTimer = setInterval(() => {
+    void runOpenClawConfigSelfHeal({ trigger: 'periodic', restartGateway: true }).catch((err) => {
+      logger.error('openclaw_self_heal_periodic_failed', { err: err?.message || String(err) });
+    });
+  }, interval);
+  periodicTimer.unref?.();
+  logger.info('openclaw_self_heal_periodic_started', { intervalMs: interval });
+}
+
+export function stopPeriodicOpenClawSelfHeal() {
+  if (periodicTimer) {
+    clearInterval(periodicTimer);
+    periodicTimer = null;
+  }
 }
 
 /** Reset cooldown (tests). */
 export function _resetOpenClawSelfHealStateForTests() {
   lastHealAt = 0;
   healInFlight = null;
+  stopPeriodicOpenClawSelfHeal();
 }

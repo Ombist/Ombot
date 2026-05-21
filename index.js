@@ -16,8 +16,11 @@ import {
   stopOpenClawGatewayBridge,
 } from './openclawGatewayBridge.js';
 import {
+  getOpenClawSelfHealStatus,
   isOpenClawSelfHealEnabled,
   runOpenClawConfigSelfHeal,
+  startPeriodicOpenClawSelfHeal,
+  stopPeriodicOpenClawSelfHeal,
 } from './openclawConfigSelfHeal.js';
 
 const PORT = Number(process.env.PORT) || 8080;
@@ -44,6 +47,12 @@ const REQUIRED_CAPABILITIES = (process.env.OPENCLAW_REQUIRED_CAPABILITIES || 'si
 const SINGLE_CLIENT_MODE = ['1', 'true', 'yes'].includes(
   String(process.env.OPENCLAW_SINGLE_CLIENT_MODE || '').trim().toLowerCase()
 );
+
+function envTruthyReadyzGateway() {
+  return ['1', 'true', 'yes'].includes(
+    String(process.env.OPENCLAW_READYZ_REQUIRE_GATEWAY || '').trim().toLowerCase()
+  );
+}
 
 let middlewareProtocol = 'ws:';
 try {
@@ -96,8 +105,22 @@ const healthServer = http.createServer(async (req, res) => {
   }
   if (req.url === '/readyz') {
     const ready = acceptingNewConnections;
-    res.writeHead(ready ? 200 : 503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ready }));
+    /** @type {Record<string, unknown>} */
+    const body = { ready };
+    if (SINGLE_CLIENT_MODE && isOpenClawSelfHealEnabled()) {
+      try {
+        const heal = await getOpenClawSelfHealStatus();
+        body.selfHeal = heal;
+        if (envTruthyReadyzGateway() && !heal.gatewayReachable) {
+          body.ready = false;
+        }
+      } catch (err) {
+        body.selfHealError = err?.message || String(err);
+      }
+    }
+    const httpReady = body.ready === false ? false : ready;
+    res.writeHead(httpReady ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(body));
     return;
   }
   if (req.url === '/metrics') {
@@ -121,6 +144,7 @@ wss.on('listening', () => {
     void runOpenClawConfigSelfHeal({ trigger: 'ombot_startup', force: true }).catch((err) => {
       logger.error('openclaw_self_heal_startup_failed', { err: err?.message || String(err) });
     });
+    startPeriodicOpenClawSelfHeal();
   }
 });
 
@@ -262,6 +286,7 @@ wss.on('error', (err) => {
 function gracefulShutdown(signal) {
   logger.warn('shutdown_start', { signal });
   acceptingNewConnections = false;
+  stopPeriodicOpenClawSelfHeal();
   stopOpenClawGatewayBridge();
   for (const ws of wss.clients) {
     ws.close(1001, 'server_shutdown');

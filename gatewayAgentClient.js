@@ -16,7 +16,10 @@ import {
   gatewayBridgeRejectTotal,
 } from './metrics.js';
 import { classifyGatewayError } from './gatewayErrorClassifier.js';
-import { scheduleOpenClawSelfHealOnGatewayTransportError } from './openclawConfigSelfHeal.js';
+import {
+  scheduleOpenClawSelfHealOnGatewayTransportError,
+  scheduleOpenClawSelfHealOnGatewayUnavailable,
+} from './openclawConfigSelfHeal.js';
 import { ProviderFallbackClient } from './providerFallbackClient.js';
 import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
 
@@ -557,11 +560,15 @@ export class GatewayAgentClient {
 
     this.gatewayWs.on('close', () => {
       this._connecting = false;
+      const wasConnected = this._gatewayConnected;
       this._gatewayConnected = false;
       this._clearConnectChallengeTimer();
       this._connectNonce = null;
       this._connectSent = false;
       this.gatewayWs = null;
+      if (!this._destroyed && !wasConnected) {
+        scheduleOpenClawSelfHealOnGatewayUnavailable('gateway_closed_before_connect');
+      }
       if (!this._destroyed) this._scheduleReconnect();
     });
 

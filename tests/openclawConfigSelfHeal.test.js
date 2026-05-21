@@ -10,6 +10,7 @@ import {
   _resetOpenClawSelfHealStateForTests,
   assessOpenClawConfigHealth,
   isOpenClawSelfHealEnabled,
+  parseGatewayLoopbackTarget,
   runOpenClawConfigSelfHeal,
 } from '../openclawConfigSelfHeal.js';
 
@@ -43,6 +44,13 @@ describe('openclawConfigSelfHeal', () => {
     delete process.env.OPENCLAW_RUNTIME_CONFIG_PATH;
     delete process.env.OPENCLAW_CONFIG_PATH;
     delete process.env.OMBOT_REPO_DIR;
+  });
+
+  it('parses default gateway loopback target', () => {
+    delete process.env.OPENCLAW_GATEWAY_URL;
+    const t = parseGatewayLoopbackTarget();
+    expect(t.host).toBe('127.0.0.1');
+    expect(t.port).toBe(18789);
   });
 
   it('is enabled when SINGLE_CLIENT_MODE=1 by default', () => {
@@ -86,6 +94,22 @@ describe('openclawConfigSelfHeal', () => {
 
     const j = JSON.parse(fs.readFileSync(runtime, 'utf8'));
     expect(j.gateway.mode).toBe('local');
+  });
+
+  it('flags gateway_mode_not_local when runtime matches fragments but mode is not local', () => {
+    const fragDir = path.join(tmpDir, 'openclaw.d');
+    const runtime = path.join(tmpDir, 'openclaw.json');
+    const bad = { gateway: { mode: 'remote', bind: 'loopback', port: 18789 } };
+    const body = `${JSON.stringify(bad, null, 2)}\n`;
+    fs.mkdirSync(fragDir, { recursive: true });
+    fs.writeFileSync(path.join(fragDir, '10-gateway-transport.json'), JSON.stringify(bad));
+    fs.writeFileSync(runtime, body);
+    process.env.OPENCLAW_FRAGMENTS_DIR = fragDir;
+    process.env.OPENCLAW_RUNTIME_CONFIG_PATH = runtime;
+
+    const h = assessOpenClawConfigHealth();
+    expect(h.needsCompose).toBe(true);
+    expect(h.reason).toBe('gateway_mode_not_local');
   });
 
   it('respects cooldown', async () => {
