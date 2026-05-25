@@ -19,11 +19,12 @@ ombist_cmd_router_probe_main() {
     min_v="1.0.0"
   fi
 
+  ombist_export_standard_path
   local node_bin
-  node_bin="$(command -v node 2>/dev/null || command -v nodejs 2>/dev/null || true)"
+  node_bin="$(ombist_resolve_node_bin 2>/dev/null || true)"
   if [[ -z "${node_bin}" ]]; then
     local err
-    err="$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "node not in PATH")")"
+    err="$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "${ombist_NO_NODE_MSG}")")"
     ombist_emit_envelope false "router_probe" "node not found." "{}" "[]" "${err}"
     return 0
   fi
@@ -105,9 +106,9 @@ NODE
   fi
 
   local status version detail
-  status="$(node -p "JSON.parse(process.argv[1]).status||''" "${out}" 2>/dev/null || true)"
-  version="$(node -p "const v=JSON.parse(process.argv[1]).version; v===null?'':String(v||'')" "${out}" 2>/dev/null || true)"
-  detail="$(node -p "const v=JSON.parse(process.argv[1]).detail; v===null?'':String(v||'')" "${out}" 2>/dev/null || true)"
+  status="$("${node_bin}" -p "JSON.parse(process.argv[1]).status||''" "${out}" 2>/dev/null || true)"
+  version="$("${node_bin}" -p "const v=JSON.parse(process.argv[1]).version; v===null?'':String(v||'')" "${out}" 2>/dev/null || true)"
+  detail="$("${node_bin}" -p "const v=JSON.parse(process.argv[1]).detail; v===null?'':String(v||'')" "${out}" 2>/dev/null || true)"
   if [[ -z "${status}" ]]; then
     local err
     err="$(printf '[{"code":"PROBE_FAILED","message":%s}]' "$(ombist_json_escape_string "probe output missing status")")"

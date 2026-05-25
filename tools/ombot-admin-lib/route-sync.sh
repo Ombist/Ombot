@@ -49,11 +49,12 @@ ombist_cmd_route_sync_main() {
     return 0
   fi
 
+  ombist_export_standard_path
   local node_bin
-  node_bin="$(command -v node 2>/dev/null || command -v nodejs 2>/dev/null || true)"
+  node_bin="$(ombist_resolve_node_bin 2>/dev/null || true)"
   if [[ -z "${node_bin}" ]]; then
     local err
-    err="$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "node not in PATH")")"
+    err="$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "${ombist_NO_NODE_MSG}")")"
     ombist_emit_envelope false "route_sync" "node not found." "{}" "[]" "${err}"
     return 0
   fi
@@ -289,7 +290,7 @@ for (const [agentId, providerKeys] of Object.entries(agents)) {
 NODE
 
     if command -v sudo >/dev/null 2>&1 && sudo -n -u ombot true >/dev/null 2>&1; then
-      if ! sudo -n -u ombot env HOME="${ombot_home}" OMBOT_HOME="${ombot_home}" OMB_AUTH_PAYLOAD="${auth_path}" PATH="/snap/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/ombot/npm-global/bin" "${node_bin}" "${auth_js}" >/dev/null 2>&1; then
+      if ! sudo -n -u ombot env HOME="${ombot_home}" OMBOT_HOME="${ombot_home}" OMB_AUTH_PAYLOAD="${auth_path}" PATH="${PATH}" "${node_bin}" "${auth_js}" >/dev/null 2>&1; then
         ombist_emit_envelope false "route_sync" "auth profile merge failed." "{}" "[]" '[{"code":"AUTH_SYNC_FAILED","message":"failed to merge auth profiles"}]'
         return 0
       fi

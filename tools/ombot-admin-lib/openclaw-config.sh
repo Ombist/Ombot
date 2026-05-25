@@ -7,9 +7,12 @@ ombist_cmd_openclaw_config_ensure_local_main() {
   local port="${OPENCLAW_GATEWAY_PORT:-18789}"
   local ombot_group="${OMBOT_GROUP:-ombot}"
 
-  if ! command -v node >/dev/null 2>&1; then
+  ombist_export_standard_path
+  local node_bin
+  node_bin="$(ombist_resolve_node_bin 2>/dev/null || true)"
+  if [[ -z "${node_bin}" ]]; then
     local err
-    err="$(printf '[{"code":%s,"message":%s}]' "NO_NODE" "$(ombist_json_escape_string "node not in PATH")")"
+    err="$(printf '[{"code":%s,"message":%s}]' "NO_NODE" "$(ombist_json_escape_string "${ombist_NO_NODE_MSG}")")"
     ombist_emit_envelope false "openclaw_config_ensure_local" "node not found." '{}' "[]" "${err}"
     return 0
   fi
@@ -17,7 +20,7 @@ ombist_cmd_openclaw_config_ensure_local_main() {
   local out
   set +e
   out="$(
-    OMBIST_OPENCLAW_CFG="${cfg}" OPENCLAW_GATEWAY_PORT="${port}" ombist_as_root node - <<'NODE'
+    OMBIST_OPENCLAW_CFG="${cfg}" OPENCLAW_GATEWAY_PORT="${port}" ombist_as_root "${node_bin}" - <<'NODE'
 const fs = require('fs');
 const path = process.env.OMBIST_OPENCLAW_CFG;
 const defaultPort = parseInt(process.env.OPENCLAW_GATEWAY_PORT || '18789', 10);
@@ -78,10 +81,10 @@ NODE
   fi
 
   local ok_flag
-  ok_flag="$(node -p "JSON.parse(process.argv[1]).ok===true" "${out}" 2>/dev/null || echo false)"
+  ok_flag="$("${node_bin}" -p "JSON.parse(process.argv[1]).ok===true" "${out}" 2>/dev/null || echo false)"
   if [[ "${ok_flag}" != "true" ]]; then
     local em
-    em="$(node -p "JSON.parse(process.argv[1]).error||'unknown'" "${out}" 2>/dev/null || echo unknown)"
+    em="$("${node_bin}" -p "JSON.parse(process.argv[1]).error||'unknown'" "${out}" 2>/dev/null || echo unknown)"
     local err
     err="$(printf '[{"code":%s,"message":%s}]' "MERGE_FAILED" "$(ombist_json_escape_string "${em}")")"
     ombist_emit_envelope false "openclaw_config_ensure_local" "${em}" '{}' "[]" "${err}"
@@ -101,7 +104,7 @@ NODE
   fi
 
   local summary data
-  summary="$(node -p "
+  summary="$("${node_bin}" -p "
 const j=JSON.parse(process.argv[1]);
 const g=process.argv[2];
 let s='gateway.mode=local';
@@ -112,7 +115,7 @@ s += '; '+g;
 s
 " "${out}" "${gw_restarted}")"
 
-  data="$(node -p "
+  data="$("${node_bin}" -p "
 const j=JSON.parse(process.argv[1]);
 const g=process.argv[2];
 JSON.stringify({

@@ -8,9 +8,12 @@ ombist_cmd_openai_env_apply_main() {
   local base_raw="${OMB_OPENAI_BASE_URL:-}"
   local ombot_group="${OMBOT_GROUP:-ombot}"
 
-  if ! command -v node >/dev/null 2>&1; then
+  ombist_export_standard_path
+  local node_bin
+  node_bin="$(ombist_resolve_node_bin 2>/dev/null || true)"
+  if [[ -z "${node_bin}" ]]; then
     local err
-    err="$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "node not in PATH")")"
+    err="$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "${ombist_NO_NODE_MSG}")")"
     ombist_emit_envelope false "openai_env_apply" "node not found." "{}" "[]" "${err}"
     return 0
   fi
@@ -63,7 +66,7 @@ process.stdout.write(
 NODE
 
   local out
-  out="$(OMB_ENV_PATH="${env_path}" OMB_OPENAI_KEY="${key_raw}" OMB_OPENAI_BASE_URL="${base_raw}" ombist_as_root node "${tmp_js}" 2>/dev/null || true)"
+  out="$(OMB_ENV_PATH="${env_path}" OMB_OPENAI_KEY="${key_raw}" OMB_OPENAI_BASE_URL="${base_raw}" ombist_as_root "${node_bin}" "${tmp_js}" 2>/dev/null || true)"
   rm -f "${tmp_js}" >/dev/null 2>&1 || true
   if [[ -z "${out}" ]] || [[ "${out}" != \{* ]]; then
     ombist_emit_envelope false "openai_env_apply" "env update failed." "{}" "[]" '[{"code":"APPLY_FAILED","message":"openai env update failed"}]'
@@ -71,7 +74,7 @@ NODE
   fi
 
   local ok_flag
-  ok_flag="$(node -p "JSON.parse(process.argv[1]).ok===true" "${out}" 2>/dev/null || echo false)"
+  ok_flag="$("${node_bin}" -p "JSON.parse(process.argv[1]).ok===true" "${out}" 2>/dev/null || echo false)"
   if [[ "${ok_flag}" != "true" ]]; then
     ombist_emit_envelope false "openai_env_apply" "env update failed." "{}" "[]" '[{"code":"APPLY_FAILED","message":"openai env update failed"}]'
     return 0

@@ -18,10 +18,11 @@ ombist_cmd_openclaw_compose_main() {
     return 0
   fi
 
+  ombist_export_standard_path
   local node_bin
-  node_bin="$(command -v node 2>/dev/null || command -v nodejs 2>/dev/null || true)"
+  node_bin="$(ombist_resolve_node_bin 2>/dev/null || true)"
   if [[ -z "${node_bin}" ]]; then
-    ombist_emit_envelope false "openclaw_compose" "node not found." "{}" "[]" '[{"code":"NO_NODE","message":"node not in PATH"}]'
+    ombist_emit_envelope false "openclaw_compose" "node not found." "{}" "[]" "$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "${ombist_NO_NODE_MSG}")")"
     return 0
   fi
 
@@ -99,8 +100,8 @@ ombist_cmd_openclaw_compose_main() {
     "$(ombist_json_escape_string "${gw_restart}")" \
     "${dry}" \
     "${rollback}")"
-  if [[ -n "${out_json}" ]] && node -e "JSON.parse(process.argv[1])" "${out_json}" >/dev/null 2>&1; then
-    data="$(node -e '
+  if [[ -n "${out_json}" ]] && "${node_bin}" -e "JSON.parse(process.argv[1])" "${out_json}" >/dev/null 2>&1; then
+    data="$("${node_bin}" -e '
 const rep = JSON.parse(process.argv[1]);
 const base = JSON.parse(process.argv[2]);
 process.stdout.write(JSON.stringify({ ...base, composeReport: rep }));

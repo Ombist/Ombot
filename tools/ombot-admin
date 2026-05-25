@@ -24,6 +24,8 @@ die() {
 # shellcheck source=/dev/null
 . "${LIB}/json.sh"
 # shellcheck source=/dev/null
+. "${LIB}/node-resolve.sh"
+# shellcheck source=/dev/null
 . "${LIB}/as_root.sh"
 # shellcheck source=/dev/null
 . "${LIB}/tls.sh"
@@ -37,6 +39,8 @@ die() {
 . "${LIB}/router-probe.sh"
 # shellcheck source=/dev/null
 . "${LIB}/health-port.sh"
+# shellcheck source=/dev/null
+. "${LIB}/openclaw-config.sh"
 # shellcheck source=/dev/null
 . "${LIB}/openclaw-compose.sh"
 # shellcheck source=/dev/null

@@ -17,6 +17,14 @@ ombist_gateway_pick_unit() {
 }
 
 ombist_cmd_gateway_health_gates_main() {
+  ombist_export_standard_path
+  local node_bin
+  node_bin="$(ombist_resolve_node_bin 2>/dev/null || true)"
+  if [[ -z "${node_bin}" ]]; then
+    ombist_emit_envelope false "gateway_health_gates" "node not found." '{"gates":{},"units":{}}' "[]" "$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "${ombist_NO_NODE_MSG}")")"
+    return 0
+  fi
+
   if ! command -v systemctl >/dev/null 2>&1; then
     ombist_emit_envelope false "gateway_health_gates" "systemctl not installed." '{"gates":{},"units":{}}' "[]" '[{"code":"NO_SYSTEMCTL","message":"systemctl not found"}]'
     return 0
@@ -36,7 +44,7 @@ ombist_cmd_gateway_health_gates_main() {
 
   local data
   data="$(
-    printf '%s' "${combined}" | node -e '
+    printf '%s' "${combined}" | "${node_bin}" -e '
 const fs = require("fs");
 const text = fs.readFileSync(0, "utf8");
 const count = (re) => (text.match(re) || []).length;
@@ -58,7 +66,7 @@ process.stdout.write(JSON.stringify({ gates, unhealthy }));
 
   local summary
   summary="$(
-    node -e '
+    "${node_bin}" -e '
 const j = JSON.parse(process.argv[1]);
 const p = j.gates.pairing;
 const s = j.gates.scope;
@@ -99,12 +107,17 @@ ombist_cmd_gateway_config_drift_main() {
   runtime_dump="$(ombist_as_root cat "${runtime_cfg}" 2>/dev/null || true)"
   systemd_env="$(ombist_as_root systemctl show ombist-ombot.service -p Environment --no-pager 2>/dev/null || true)"
 
+  ombist_export_standard_path
   local node_bin
-  node_bin="$(command -v node 2>/dev/null || command -v nodejs 2>/dev/null || true)"
+  node_bin="$(ombist_resolve_node_bin 2>/dev/null || true)"
+  if [[ -z "${node_bin}" ]]; then
+    ombist_emit_envelope false "gateway_config_drift" "node not found." "{}" "[]" "$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "${ombist_NO_NODE_MSG}")")"
+    return 0
+  fi
 
   local data
   data="$(
-    node -e '
+    "${node_bin}" -e '
 const envRaw = process.argv[1] || "";
 const cfgRaw = process.argv[2] || "";
 const sdRaw = process.argv[3] || "";

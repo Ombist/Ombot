@@ -30,6 +30,17 @@ Every invocation prints **one JSON object** to stdout (no `PROVISION_SUMMARY_*` 
 
 On failure: `ok: false` and `errors: [{ "code": "NO_SUDO", "message": "..." }]`. Common codes: `CLI_MISSING`, `NO_SUDO`, `NO_OPENSSL`, `NO_FIREWALL_TOOL`, `TLS_FAILED`, `NO_SYSTEMCTL`, `NO_NODE`, `MERGE_FAILED`, `AUTH_SYNC_FAILED`, `COMPOSE_LOCKED`, `STRICT_KEYS_VIOLATION`, `UNKNOWN_COMMAND`.
 
+### `NO_NODE` (Node resolution)
+
+Subcommands that run Node helpers (`route sync`, `openclaw compose`, `router probe`, `gateway config-drift`, `openai env apply`, etc.) resolve the Node binary via shared logic in `ombot-admin-lib/node-resolve.sh` (also mirrored in OmbRouter `scripts/ombist-remote-probe.sh` for OMB mode). Resolution order:
+
+1. Standard PATH prefix (`/snap/bin`, `/usr/local/bin`, `/usr/bin`, `/opt/ombot/npm-global/bin`, …)
+2. `command -v node` / `command -v nodejs` (must pass `node -e 'process.exit(0)'`)
+3. Fixed paths: `/snap/bin/node`, `/usr/local/bin/node`, `/usr/bin/node`, `/usr/bin/nodejs`, `/opt/ombot/npm-global/bin/node`
+4. **Headless nvm**: `OMBOT_HOME` (default `/home/ombot`) → `~/.nvm/nvm.sh` + `nvm use 22`, or newest `~/.nvm/versions/node/*/bin/node`
+
+If preflight reports `HAS_NODE=1` but a command still returns `NO_NODE`, update `/opt/ombot/bin/ombot-admin-lib/` from a current Ombot checkout (full reprovision or copy lib files). Non-login SSH often lacks nvm on PATH until this resolver runs.
+
 ## Commands
 
 | Command | Purpose |
