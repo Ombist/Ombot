@@ -9,9 +9,12 @@ const ombotRoot = path.join(testDir, '..');
 import {
   _resetOpenClawSelfHealStateForTests,
   assessOpenClawConfigHealth,
+  gatewayConnectWaitMs,
+  isGatewayWatchdogEnabled,
   isOpenClawSelfHealEnabled,
   parseGatewayLoopbackTarget,
   runOpenClawConfigSelfHeal,
+  waitForGatewayLoopback,
 } from '../openclawConfigSelfHeal.js';
 
 describe('openclawConfigSelfHeal', () => {
@@ -39,7 +42,9 @@ describe('openclawConfigSelfHeal', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     delete process.env.OPENCLAW_SELF_HEAL;
     delete process.env.OPENCLAW_SINGLE_CLIENT_MODE;
+    delete process.env.OPENCLAW_GATEWAY_BRIDGE;
     delete process.env.OPENCLAW_SELF_HEAL_RESTART_GATEWAY;
+    delete process.env.OPENCLAW_GATEWAY_CONNECT_WAIT_MS;
     delete process.env.OPENCLAW_FRAGMENTS_DIR;
     delete process.env.OPENCLAW_RUNTIME_CONFIG_PATH;
     delete process.env.OPENCLAW_CONFIG_PATH;
@@ -57,6 +62,43 @@ describe('openclawConfigSelfHeal', () => {
     delete process.env.OPENCLAW_SELF_HEAL;
     process.env.OPENCLAW_SINGLE_CLIENT_MODE = '1';
     expect(isOpenClawSelfHealEnabled()).toBe(true);
+    expect(isGatewayWatchdogEnabled()).toBe(true);
+  });
+
+  it('isGatewayWatchdogEnabled when OPENCLAW_GATEWAY_BRIDGE=1', () => {
+    delete process.env.OPENCLAW_SELF_HEAL;
+    delete process.env.OPENCLAW_SINGLE_CLIENT_MODE;
+    process.env.OPENCLAW_GATEWAY_BRIDGE = '1';
+    expect(isGatewayWatchdogEnabled()).toBe(true);
+  });
+
+  it('gatewayConnectWaitMs defaults to 45000', () => {
+    delete process.env.OPENCLAW_GATEWAY_CONNECT_WAIT_MS;
+    expect(gatewayConnectWaitMs()).toBe(45_000);
+  });
+
+  it('waitForGatewayLoopback returns immediately when maxWaitMs is 0', async () => {
+    const result = await waitForGatewayLoopback({ maxWaitMs: 0, probeTimeoutMs: 100 });
+    expect(typeof result.ok).toBe('boolean');
+    expect(result.probe).toBeDefined();
+  });
+
+  it('force heal bypasses cooldown after prior run', async () => {
+    const fragDir = path.join(tmpDir, 'openclaw.d');
+    const runtime = path.join(tmpDir, 'openclaw.json');
+    fs.mkdirSync(fragDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(fragDir, '10-gateway-transport.json'),
+      JSON.stringify({ gateway: { mode: 'local', bind: 'loopback', port: 18789 } })
+    );
+    fs.writeFileSync(runtime, JSON.stringify({ gateway: { mode: 'local', bind: 'loopback', port: 18789 } }) + '\n');
+    process.env.OPENCLAW_FRAGMENTS_DIR = fragDir;
+    process.env.OPENCLAW_RUNTIME_CONFIG_PATH = runtime;
+    process.env.OPENCLAW_SELF_HEAL_COOLDOWN_MS = '600000';
+
+    await runOpenClawConfigSelfHeal({ trigger: 't1', force: true });
+    const second = await runOpenClawConfigSelfHeal({ trigger: 't2', force: true });
+    expect(second.actions).not.toContain('cooldown');
   });
 
   it('detects composed_runtime_mismatch', () => {

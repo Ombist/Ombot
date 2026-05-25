@@ -267,7 +267,8 @@ main() {
       case "${args[1]}" in
         health-gates) ombist_cmd_gateway_health_gates_main ;;
         config-drift) ombist_cmd_gateway_config_drift_main ;;
-        *) die "gateway supports: health-gates | config-drift" ;;
+        loopback) ombist_cmd_gateway_loopback_main ;;
+        *) die "gateway supports: health-gates | config-drift | loopback" ;;
       esac
       ;;
     *)

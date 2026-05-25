@@ -17,10 +17,9 @@ import {
 } from './openclawGatewayBridge.js';
 import {
   getOpenClawSelfHealStatus,
-  isOpenClawSelfHealEnabled,
-  runOpenClawConfigSelfHeal,
-  startPeriodicOpenClawSelfHeal,
-  stopPeriodicOpenClawSelfHeal,
+  isGatewayWatchdogEnabled,
+  startGatewayLoopbackWatchdog,
+  stopGatewayLoopbackWatchdog,
 } from './openclawConfigSelfHeal.js';
 
 const PORT = Number(process.env.PORT) || 8080;
@@ -107,7 +106,7 @@ const healthServer = http.createServer(async (req, res) => {
     const ready = acceptingNewConnections;
     /** @type {Record<string, unknown>} */
     const body = { ready };
-    if (SINGLE_CLIENT_MODE && isOpenClawSelfHealEnabled()) {
+    if (isGatewayWatchdogEnabled()) {
       try {
         const heal = await getOpenClawSelfHealStatus();
         body.selfHeal = heal;
@@ -140,12 +139,7 @@ const wss = new WebSocketServer({ host: WS_LISTEN_HOST, port: PORT, path: '/ws' 
 
 wss.on('listening', () => {
   logger.info('ws_server_listening', { host: WS_LISTEN_HOST, port: PORT, path: '/ws' });
-  if (SINGLE_CLIENT_MODE && isOpenClawSelfHealEnabled()) {
-    void runOpenClawConfigSelfHeal({ trigger: 'ombot_startup', force: true }).catch((err) => {
-      logger.error('openclaw_self_heal_startup_failed', { err: err?.message || String(err) });
-    });
-    startPeriodicOpenClawSelfHeal();
-  }
+  startGatewayLoopbackWatchdog();
 });
 
 if (shouldStartGatewayBridge()) {
@@ -286,7 +280,7 @@ wss.on('error', (err) => {
 function gracefulShutdown(signal) {
   logger.warn('shutdown_start', { signal });
   acceptingNewConnections = false;
-  stopPeriodicOpenClawSelfHeal();
+  stopGatewayLoopbackWatchdog();
   stopOpenClawGatewayBridge();
   for (const ws of wss.clients) {
     ws.close(1001, 'server_shutdown');

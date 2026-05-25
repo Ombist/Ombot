@@ -376,6 +376,9 @@ as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombis
   echo "OPENCLAW_SINGLE_CLIENT_MODE=1"
   echo "OPENCLAW_SELF_HEAL=1"
   echo "OPENCLAW_SELF_HEAL_INTERVAL_MS=180000"
+  echo "OPENCLAW_GATEWAY_WATCH_INTERVAL_MS=60000"
+  echo "OPENCLAW_GATEWAY_CONNECT_WAIT_MS=45000"
+  echo "OPENCLAW_READYZ_REQUIRE_GATEWAY=1"
   echo "MIDDLEWARE_WS_URL=wss://127.0.0.1:9/ws"
   echo "OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0"
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
@@ -432,6 +435,10 @@ EOF
 as_root chown root:"${OMBOT_GROUP}" "${WRAPPER_OMBOT}"
 as_root chmod 750 "${WRAPPER_OMBOT}"
 
+WAIT_GATEWAY="${OMBOT_BIN_DIR}/wait-gateway-loopback.sh"
+as_root install -m 0750 "${OMBOT_REPO_DIR}/tools/wait-gateway-loopback.sh" "${WAIT_GATEWAY}"
+as_root chown root:"${OMBOT_GROUP}" "${WAIT_GATEWAY}"
+
 as_root tee "${GW_SERVICE_PATH}" >/dev/null <<EOF
 [Unit]
 Description=OpenClaw Gateway (single-bot)
@@ -458,6 +465,7 @@ EOF
 as_root tee "${OMBOT_SERVICE_PATH}" >/dev/null <<EOF
 [Unit]
 Description=Ombot single-client (Ombist)
+Requires=ombist-openclaw-gateway.service
 After=network-online.target ombist-openclaw-gateway.service
 Wants=network-online.target
 
@@ -466,6 +474,7 @@ Type=simple
 User=${OMBOT_USER}
 Group=${OMBOT_GROUP}
 EnvironmentFile=${OMBOT_ENV_PATH}
+ExecStartPre=${WAIT_GATEWAY}
 ExecStart=${WRAPPER_OMBOT}
 Restart=on-failure
 RestartSec=5

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { mergeOrderedFragments } from './tools/openclaw-json-merge.mjs';
 import { classifyGatewayError } from './gatewayErrorClassifier.js';
 import { logger } from './logger.js';
+import { gatewayLoopbackReachable } from './metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,6 +20,8 @@ let lastHealAt = 0;
 let healInFlight = null;
 /** @type {ReturnType<typeof setInterval> | null} */
 let periodicTimer = null;
+/** @type {ReturnType<typeof setInterval> | null} */
+let portWatchdogTimer = null;
 
 function envTruthy(name, defaultWhenUnset = false) {
   const raw = process.env[name];
@@ -28,11 +31,21 @@ function envTruthy(name, defaultWhenUnset = false) {
   return ['1', 'true', 'yes'].includes(String(raw).trim().toLowerCase());
 }
 
-export function isOpenClawSelfHealEnabled() {
+function envGatewayBridgeEnabled() {
+  const v = (process.env.OPENCLAW_GATEWAY_BRIDGE || '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes';
+}
+
+/** Watchdog + self-heal for single-client, bridge, or explicit OPENCLAW_SELF_HEAL. */
+export function isGatewayWatchdogEnabled() {
   if (process.env.OPENCLAW_SELF_HEAL !== undefined) {
     return envTruthy('OPENCLAW_SELF_HEAL', false);
   }
-  return envTruthy('OPENCLAW_SINGLE_CLIENT_MODE', false);
+  return envTruthy('OPENCLAW_SINGLE_CLIENT_MODE', false) || envGatewayBridgeEnabled();
+}
+
+export function isOpenClawSelfHealEnabled() {
+  return isGatewayWatchdogEnabled();
 }
 
 function cooldownMs() {
@@ -44,6 +57,19 @@ function periodicIntervalMs() {
   const n = Number(process.env.OPENCLAW_SELF_HEAL_INTERVAL_MS ?? 180_000);
   if (!Number.isFinite(n) || n <= 0) return 0;
   return Math.max(60_000, n);
+}
+
+function gatewayWatchIntervalMs() {
+  const n = Number(process.env.OPENCLAW_GATEWAY_WATCH_INTERVAL_MS ?? 60_000);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(15_000, n);
+}
+
+/** @returns {number} */
+export function gatewayConnectWaitMs() {
+  const n = Number(process.env.OPENCLAW_GATEWAY_CONNECT_WAIT_MS ?? 45_000);
+  if (!Number.isFinite(n) || n < 0) return 45_000;
+  return n;
 }
 
 function sleep(ms) {
@@ -161,6 +187,10 @@ export function parseGatewayLoopbackTarget() {
  * TCP probe (Gateway WS listens on same port).
  * @param {number} [timeoutMs]
  */
+export function setGatewayLoopbackMetric(ok) {
+  gatewayLoopbackReachable.set(ok ? 1 : 0);
+}
+
 export function probeGatewayLoopback(timeoutMs = 2000) {
   const { host, port, url } = parseGatewayLoopbackTarget();
   return new Promise((resolve) => {
@@ -181,6 +211,39 @@ export function probeGatewayLoopback(timeoutMs = 2000) {
     socket.once('timeout', () => finish({ ok: false, error: 'timeout' }));
     socket.once('error', (err) => finish({ ok: false, error: err?.message || String(err) }));
   });
+}
+
+/**
+ * Poll until loopback gateway accepts TCP or timeout.
+ * @param {object} [opts]
+ * @param {number} [opts.maxWaitMs]
+ * @param {number} [opts.pollMs]
+ * @param {number} [opts.probeTimeoutMs]
+ */
+export async function waitForGatewayLoopback(opts = {}) {
+  const maxWait = opts.maxWaitMs ?? gatewayConnectWaitMs();
+  if (maxWait <= 0) {
+    const probe = await probeGatewayLoopback(opts.probeTimeoutMs ?? 1500);
+    setGatewayLoopbackMetric(probe.ok);
+    return { ok: probe.ok, probe };
+  }
+  const poll = opts.pollMs ?? 500;
+  const deadline = Date.now() + maxWait;
+  let lastProbe = await probeGatewayLoopback(opts.probeTimeoutMs ?? 1500);
+  if (lastProbe.ok) {
+    setGatewayLoopbackMetric(true);
+    return { ok: true, probe: lastProbe };
+  }
+  while (Date.now() < deadline) {
+    await sleep(poll);
+    lastProbe = await probeGatewayLoopback(opts.probeTimeoutMs ?? 1500);
+    if (lastProbe.ok) {
+      setGatewayLoopbackMetric(true);
+      return { ok: true, probe: lastProbe };
+    }
+  }
+  setGatewayLoopbackMetric(false);
+  return { ok: false, probe: lastProbe };
 }
 
 /**
@@ -266,9 +329,10 @@ export async function getOpenClawSelfHealStatus() {
   const { runtimePath } = resolveConfigPaths();
   const config = assessOpenClawConfigHealth();
   const loopback = await probeGatewayLoopback(1500);
+  setGatewayLoopbackMetric(loopback.ok);
   const gatewayMode = readRuntimeGatewayMode(runtimePath);
   return {
-    enabled: isOpenClawSelfHealEnabled(),
+    enabled: isGatewayWatchdogEnabled(),
     config,
     gatewayMode: gatewayMode || null,
     gatewayModeOk: gatewayMode === 'local',
@@ -342,8 +406,47 @@ function tryRestartGatewayService() {
  * @param {boolean} [opts.force] — ignore cooldown
  * @param {boolean} [opts.restartGateway] — try systemctl restart when port down or after compose
  */
+/**
+ * Light watchdog: TCP probe + restart gateway when port is down (no compose).
+ */
+export async function runGatewayPortWatchdog() {
+  if (!isGatewayWatchdogEnabled()) {
+    return { ok: true, actions: [], reason: 'disabled' };
+  }
+  const probe = await probeGatewayLoopback(2000);
+  setGatewayLoopbackMetric(probe.ok);
+  if (probe.ok) {
+    return { ok: true, actions: ['port_up'], gatewayReachable: true };
+  }
+
+  logger.warn('openclaw_gateway_watchdog_port_down', {
+    error: probe.error,
+    host: probe.host,
+    port: probe.port,
+  });
+
+  const restart = tryRestartGatewayService();
+  const actions = [`gateway_port_down:${probe.error || 'closed'}`];
+  if (restart.skipped) {
+    actions.push('restart_skipped');
+    return { ok: false, actions, gatewayReachable: false };
+  }
+  if (!restart.ok) {
+    actions.push('gateway_restart_failed');
+    return { ok: false, actions, gatewayReachable: false };
+  }
+  actions.push(`gateway_restarted:${restart.unit}`);
+  const wait = await waitForGatewayLoopback({ maxWaitMs: gatewayConnectWaitMs() });
+  if (wait.ok) {
+    actions.push('gateway_port_up');
+    return { ok: true, actions, gatewayReachable: true };
+  }
+  actions.push(`gateway_still_down:${wait.probe?.error || 'closed'}`);
+  return { ok: false, actions, gatewayReachable: false };
+}
+
 export async function runOpenClawConfigSelfHeal(opts = {}) {
-  if (!isOpenClawSelfHealEnabled()) {
+  if (!isGatewayWatchdogEnabled()) {
     return { ok: true, actions: [], reason: 'disabled' };
   }
 
@@ -396,6 +499,7 @@ export async function runOpenClawConfigSelfHeal(opts = {}) {
     }
 
     let probe = await probeGatewayLoopback(2000);
+    setGatewayLoopbackMetric(probe.ok);
     if (!probe.ok) {
       actions.push(`gateway_port_down:${probe.error || 'closed'}`);
     }
@@ -411,9 +515,9 @@ export async function runOpenClawConfigSelfHeal(opts = {}) {
       } else if (restart.ok) {
         actions.push(`gateway_restarted:${restart.unit}`);
         logger.info('openclaw_self_heal_gateway_restarted', { unit: restart.unit, trigger });
-        await sleep(2500);
-        probe = await probeGatewayLoopback(3000);
-        if (probe.ok) {
+        const wait = await waitForGatewayLoopback({ maxWaitMs: gatewayConnectWaitMs() });
+        probe = wait.probe;
+        if (wait.ok) {
           actions.push('gateway_port_up');
         } else {
           actions.push(`gateway_still_down:${probe.error || 'closed'}`);
@@ -471,11 +575,11 @@ export async function runOpenClawConfigSelfHeal(opts = {}) {
  * @param {string} [trigger]
  */
 export function scheduleOpenClawSelfHealOnGatewayTransportError(errorLike, trigger = 'gateway_transport') {
-  if (!isOpenClawSelfHealEnabled()) return;
+  if (!isGatewayWatchdogEnabled()) return;
   const classified = classifyGatewayError(errorLike);
   if (classified.category !== 'network') return;
 
-  void runOpenClawConfigSelfHeal({ trigger, restartGateway: true, force: false }).catch((err) => {
+  void runOpenClawConfigSelfHeal({ trigger, restartGateway: true, force: true }).catch((err) => {
     logger.error('openclaw_self_heal_unhandled', { err: err?.message || String(err) });
   });
 }
@@ -484,16 +588,39 @@ export function scheduleOpenClawSelfHealOnGatewayTransportError(errorLike, trigg
  * Before/after user turn when gateway WS is not ready (config may be fine; service down).
  */
 export function scheduleOpenClawSelfHealOnGatewayUnavailable(trigger = 'gateway_unavailable') {
-  if (!isOpenClawSelfHealEnabled()) return;
-  void runOpenClawConfigSelfHeal({ trigger, restartGateway: true }).catch((err) => {
+  if (!isGatewayWatchdogEnabled()) return;
+  void runOpenClawConfigSelfHeal({ trigger, restartGateway: true, force: true }).catch((err) => {
     logger.error('openclaw_self_heal_unhandled', { err: err?.message || String(err) });
   });
 }
 
-/** Periodic compose + port check (single-bot deployments). */
+/** Light TCP probe + restart interval. */
+export function startGatewayPortWatchdog() {
+  stopGatewayPortWatchdog();
+  if (!isGatewayWatchdogEnabled()) return;
+  const interval = gatewayWatchIntervalMs();
+  if (interval <= 0) return;
+
+  portWatchdogTimer = setInterval(() => {
+    void runGatewayPortWatchdog().catch((err) => {
+      logger.error('openclaw_gateway_watchdog_failed', { err: err?.message || String(err) });
+    });
+  }, interval);
+  portWatchdogTimer.unref?.();
+  logger.info('openclaw_gateway_port_watchdog_started', { intervalMs: interval });
+}
+
+export function stopGatewayPortWatchdog() {
+  if (portWatchdogTimer) {
+    clearInterval(portWatchdogTimer);
+    portWatchdogTimer = null;
+  }
+}
+
+/** Periodic compose + port check (single-bot / bridge deployments). */
 export function startPeriodicOpenClawSelfHeal() {
   stopPeriodicOpenClawSelfHeal();
-  if (!isOpenClawSelfHealEnabled()) return;
+  if (!isGatewayWatchdogEnabled()) return;
   const interval = periodicIntervalMs();
   if (interval <= 0) return;
 
@@ -513,9 +640,24 @@ export function stopPeriodicOpenClawSelfHeal() {
   }
 }
 
+/** Startup heal + periodic compose + light port watchdog. */
+export function startGatewayLoopbackWatchdog() {
+  if (!isGatewayWatchdogEnabled()) return;
+  void runOpenClawConfigSelfHeal({ trigger: 'ombot_startup', force: true }).catch((err) => {
+    logger.error('openclaw_self_heal_startup_failed', { err: err?.message || String(err) });
+  });
+  startPeriodicOpenClawSelfHeal();
+  startGatewayPortWatchdog();
+}
+
+export function stopGatewayLoopbackWatchdog() {
+  stopPeriodicOpenClawSelfHeal();
+  stopGatewayPortWatchdog();
+}
+
 /** Reset cooldown (tests). */
 export function _resetOpenClawSelfHealStateForTests() {
   lastHealAt = 0;
   healInFlight = null;
-  stopPeriodicOpenClawSelfHeal();
+  stopGatewayLoopbackWatchdog();
 }

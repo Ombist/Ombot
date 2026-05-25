@@ -51,6 +51,12 @@ export const capabilityRejectTotal = new client.Counter({
   registers: [register],
 });
 
+export const gatewayLoopbackReachable = new client.Gauge({
+  name: 'ombot_gateway_loopback_reachable',
+  help: 'OpenClaw gateway loopback TCP reachable (1) or not (0)',
+  registers: [register],
+});
+
 export const gatewayBridgeConnectState = new client.Gauge({
   name: 'ombot_gateway_bridge_connected',
   help: 'OpenClaw gateway bridge connected (1) or not (0)',

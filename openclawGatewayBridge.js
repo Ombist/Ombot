@@ -20,7 +20,11 @@ import {
   gatewayBridgeGatewayToPhoneTotal,
 } from './metrics.js';
 import { classifyGatewayError } from './gatewayErrorClassifier.js';
-import { scheduleOpenClawSelfHealOnGatewayTransportError } from './openclawConfigSelfHeal.js';
+import {
+  gatewayConnectWaitMs,
+  scheduleOpenClawSelfHealOnGatewayTransportError,
+  waitForGatewayLoopback,
+} from './openclawConfigSelfHeal.js';
 import { ProviderFallbackClient } from './providerFallbackClient.js';
 import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
 
@@ -599,7 +603,35 @@ export class OpenClawGatewayBridge {
 
   _connectGateway() {
     if (this._destroyed || this._connecting) return;
+    void this._connectGatewayWithWait();
+  }
+
+  async _connectGatewayWithWait() {
+    if (this._destroyed || this._connecting) return;
     this._connecting = true;
+    const waitMs = gatewayConnectWaitMs();
+    if (waitMs > 0) {
+      const wait = await waitForGatewayLoopback({ maxWaitMs: waitMs });
+      if (!wait.ok) {
+        this._connecting = false;
+        if (!this._destroyed) {
+          scheduleOpenClawSelfHealOnGatewayTransportError(
+            new Error(wait.probe?.error || 'gateway_port_unavailable'),
+            'gateway_bridge_connect_wait'
+          );
+          this._scheduleGatewayReconnect({ portDown: true });
+        }
+        return;
+      }
+    }
+    if (this._destroyed) {
+      this._connecting = false;
+      return;
+    }
+    this._openGatewayWebSocket();
+  }
+
+  _openGatewayWebSocket() {
     try {
       this.gatewayWs = new WebSocket(this.gatewayUrl);
     } catch (err) {
@@ -637,10 +669,11 @@ export class OpenClawGatewayBridge {
     });
   }
 
-  _scheduleGatewayReconnect() {
+  _scheduleGatewayReconnect(opts = {}) {
     if (this._destroyed) return;
     if (this._reconnectTimer) return;
-    const delay = Math.min(30_000, 2000 + Math.random() * 1000);
+    const base = opts.portDown ? 5000 : 2000;
+    const delay = Math.min(30_000, base + Math.random() * 1000);
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
       if (!this._destroyed && !this.gatewayWs) this._connectGateway();

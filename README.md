@@ -231,21 +231,28 @@ Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_tot
 | `OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID` | same as `OPENCLAW_BRIDGE_AGENT_ID` | Gateway `agent` params `agentId` on each turn |
 | `OPENCLAW_BRIDGE_REQ_TIMEOUT_MS` | `120000` | Per-turn timeout waiting for Gateway `res` |
 | `OPENCLAW_SINGLE_CLIENT_MODE` | (unset) | `1` for direct Phone↔Ombot WSS (no Ombers middleware path) |
-| `OPENCLAW_SELF_HEAL` | follows `OPENCLAW_SINGLE_CLIENT_MODE` | `1`/`true`: auto-recompose `openclaw.d`→runtime and optionally restart gateway when config drift or `ECONNREFUSED` on gateway URL |
-| `OPENCLAW_SELF_HEAL_COOLDOWN_MS` | `120000` | Minimum interval between self-heal runs (except startup `force`) |
+| `OPENCLAW_SELF_HEAL` | follows single-client or bridge | `1`/`true`: enable gateway watchdog; `0` disables even in single-client mode |
+| `OPENCLAW_SELF_HEAL_COOLDOWN_MS` | `120000` | Minimum interval between full self-heal runs (except `force` / transport-triggered) |
 | `OPENCLAW_SELF_HEAL_INTERVAL_MS` | `180000` | Periodic compose + port check; `0` disables periodic timer |
+| `OPENCLAW_GATEWAY_WATCH_INTERVAL_MS` | `60000` | Light TCP watchdog interval (probe + restart only); `0` disables |
+| `OPENCLAW_GATEWAY_CONNECT_WAIT_MS` | `45000` | Max wait for loopback port before WebSocket connect; `0` = single probe only |
 | `OPENCLAW_SELF_HEAL_RESTART_GATEWAY` | `1` | `0` to only recompose runtime JSON without `sudo systemctl restart` |
-| `OPENCLAW_READYZ_REQUIRE_GATEWAY` | `0` | `1`: `/readyz` returns 503 when loopback gateway port is not accepting TCP |
+| `OPENCLAW_READYZ_REQUIRE_GATEWAY` | `0` (provision: `1`) | `1`: `/readyz` returns 503 when loopback gateway port is not accepting TCP |
 
-### OpenClaw 設定自我修復（單 BOT）
+Prometheus: `ombot_gateway_loopback_reachable` (0/1) updated by watchdog and `/readyz`.
 
-當 `OPENCLAW_SINGLE_CLIENT_MODE=1`（或明確 `OPENCLAW_SELF_HEAL=1`）時，Ombot 會：
+### OpenClaw Gateway 監察與自我修復
 
-1. **啟動時**：檢查 runtime `gateway.mode` 是否為 **`local`**（與片段合成 hash 一致）→ 必要時修正 `10-gateway-transport.json` 並 `openclaw-compose` → 探測 Gateway 埠 + 重啟 service。
-2. **週期性**（預設每 3 分鐘）：再次檢查設定與 18789 埠，埠關閉則重啟 gateway（即使 JSON 已正確）。
-3. **Gateway `ECONNREFUSED` / 傳輸錯誤**：冷卻後 compose + 重啟。
-4. **使用者送訊但 Gateway WS 未就緒**：觸發一次修復嘗試。
-5. **`GET /readyz`**（單 BOT）：JSON 含 `selfHeal.gatewayLoopback`；設 `OPENCLAW_READYZ_REQUIRE_GATEWAY=1` 時埠未開則 503。
+當 `OPENCLAW_SINGLE_CLIENT_MODE=1`、`OPENCLAW_GATEWAY_BRIDGE=1`，或明確 `OPENCLAW_SELF_HEAL=1` 時，Ombot 會：
+
+1. **啟動時**：完整 self-heal（compose + 埠探測 + 必要時重啟 gateway）+ 啟動輕量 watchdog 與週期 compose。
+2. **輕量 watchdog**（預設每 60 秒）：TCP 探測 `127.0.0.1:18789`，埠關閉則 `systemctl restart` gateway（不每次 compose）。
+3. **週期性**（預設每 3 分鐘）：設定 drift 檢查 + compose + 埠檢查。
+4. **Gateway `ECONNREFUSED` / 傳輸錯誤**：立即觸發 self-heal（不受 120s cooldown 限制）；WebSocket 連線前會先等待埠（`OPENCLAW_GATEWAY_CONNECT_WAIT_MS`）。
+5. **使用者送訊但 Gateway WS 未就緒**：觸發修復嘗試。
+6. **`GET /readyz`**：JSON 含 `selfHeal`；`OPENCLAW_READYZ_REQUIRE_GATEWAY=1` 時埠未開則 503。
+
+佈署：`ombist-ombot.service` 使用 `ExecStartPre=/opt/ombot/bin/wait-gateway-loopback.sh` 與 `Requires=ombist-openclaw-gateway.service`。營運：`ombot-admin gateway loopback --json`。
 
 重啟 Gateway 需要 **`ombot` 使用者能 `sudo -n systemctl restart ombist-openclaw-gateway.service`**。若無 sudo，仍會修好 runtime JSON，請手動重啟 gateway unit。
 

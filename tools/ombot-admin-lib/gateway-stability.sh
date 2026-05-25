@@ -208,3 +208,55 @@ process.stdout.write(JSON.stringify(base));
     ombist_emit_envelope false "gateway_config_drift" "${summary}" "${data}" "[]" '[{"code":"CONFIG_DRIFT","message":"token/scope source mismatch detected"}]'
   fi
 }
+
+ombist_cmd_gateway_loopback_main() {
+  ombist_export_standard_path
+  local node_bin repo
+  node_bin="$(ombist_resolve_node_bin 2>/dev/null || true)"
+  if [[ -z "${node_bin}" ]]; then
+    ombist_emit_envelope false "gateway_loopback" "node not found." "{}" "[]" "$(printf '[{"code":"NO_NODE","message":%s}]' "$(ombist_json_escape_string "${ombist_NO_NODE_MSG}")")"
+    return 0
+  fi
+
+  repo="${OMBOT_REPO_DIR:-/opt/ombot/Ombot}"
+  if [[ ! -f "${repo}/openclawConfigSelfHeal.js" ]]; then
+    ombist_emit_envelope false "gateway_loopback" "openclawConfigSelfHeal.js not found." "{}" "[]" '[{"code":"NO_REPO","message":"Ombot repo path invalid"}]'
+    return 0
+  fi
+
+  local gateway_unit gw_state data summary ok_flag
+  gateway_unit="$(ombist_gateway_pick_unit "ombist-openclaw-gateway.service" "openclaw-gateway@Ombist_IOS.service")"
+  gw_state="$(ombist_as_root systemctl is-active "${gateway_unit}" 2>/dev/null || true)"
+
+  data="$(
+    OMBOT_REPO_DIR="${repo}" "${node_bin}" --input-type=module -e "
+import { probeGatewayLoopback, parseGatewayLoopbackTarget, isGatewayWatchdogEnabled } from '${repo}/openclawConfigSelfHeal.js';
+const target = parseGatewayLoopbackTarget();
+const probe = await probeGatewayLoopback(2000);
+const out = {
+  host: target.host,
+  port: target.port,
+  url: target.url,
+  reachable: probe.ok,
+  error: probe.ok ? null : (probe.error || 'closed'),
+  watchdogEnabled: isGatewayWatchdogEnabled(),
+  systemd: { unit: '${gateway_unit}', active: '${gw_state}' },
+};
+process.stdout.write(JSON.stringify(out));
+" 2>/dev/null || true
+  )"
+
+  if [[ -z "${data}" || "${data}" != \{* ]]; then
+    ombist_emit_envelope false "gateway_loopback" "probe failed." "{}" "[]" '[{"code":"PROBE_FAILED","message":"could not probe loopback gateway"}]'
+    return 0
+  fi
+
+  ok_flag="$("${node_bin}" -e 'const j=JSON.parse(process.argv[1]); process.stdout.write(j.reachable?"true":"false")' "${data}")"
+  summary="$("${node_bin}" -e 'const j=JSON.parse(process.argv[1]); const s=j.reachable?"reachable":"down"; process.stdout.write(`gateway loopback ${s} (${j.host}:${j.port}); unit ${j.systemd.unit}=${j.systemd.active}`)' "${data}")"
+
+  if [[ "${ok_flag}" == "true" ]]; then
+    ombist_emit_envelope true "gateway_loopback" "${summary}" "${data}" "[]" "[]"
+  else
+    ombist_emit_envelope false "gateway_loopback" "${summary}" "${data}" "[]" '[{"code":"GATEWAY_DOWN","message":"loopback gateway port not accepting TCP"}]'
+  fi
+}

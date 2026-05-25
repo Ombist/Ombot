@@ -58,6 +58,7 @@ If preflight reports `HAS_NODE=1` but a command still returns `NO_NODE`, update 
 | `ombot-admin ombot health-port ensure-internal --json` | Restrict Ombot `HEALTH_PORT` to localhost + tailnet |
 | `ombot-admin gateway health-gates --json` | Evaluate Pairing / Scope / Provider gates from recent Ombot + Gateway logs (default window `10 min ago`) |
 | `ombot-admin gateway config-drift --json` | Compare `OPENCLAW_GATEWAY_TOKEN` and `OPENCLAW_BRIDGE_OPERATOR_SCOPES` across env/runtime/systemd sources; when **`OPENCLAW_FRAGMENTS_DIR`** is present, also merges **`ombist-openclaw-drift.mjs`** output (per-fragment SHA256, composed vs runtime hash, optional bridge agent id vs `agents.list`, optional **`llm_secret_env_and_auth_profiles_overlap`** warning). Drift codes may include `composed_runtime_vs_fragments_mismatch`, `bridge_agent_id_vs_agents_list`, `llm_secret_env_and_auth_profiles_overlap`. |
+| `ombot-admin gateway loopback --json` | TCP probe of `OPENCLAW_GATEWAY_URL` (default `127.0.0.1:18789`), plus gateway systemd unit active state |
 
 ### TLS version fingerprint (`rootCaSha256Hex`)
 
@@ -75,8 +76,9 @@ After changing `systemctl monitor` behavior, machines must run an **`ombot-admin
 
 When `NOT_PAIRED`, `missing scope: operator.write`, and provider 401 appear in mixed waves, run:
 
-1. `ombot-admin gateway health-gates --json` to detect which gate is currently failing.
-2. `ombot-admin gateway config-drift --json` to catch token/scope drift among `/etc/ombot/ombot.env`, runtime `openclaw.json`, `systemctl` env, and (when fragments are used) composed-config vs on-disk drift from `openclaw.d`.
+1. `ombot-admin gateway loopback --json` when users see `gateway_error: connect ECONNREFUSED 127.0.0.1:18789` (port not listening).
+2. `ombot-admin gateway health-gates --json` to detect which gate is currently failing.
+3. `ombot-admin gateway config-drift --json` to catch token/scope drift among `/etc/ombot/ombot.env`, runtime `openclaw.json`, `systemctl` env, and (when fragments are used) composed-config vs on-disk drift from `openclaw.d`.
 3. `tools/gateway-stability-runbook.sh fallback-on` to print reversible fallback env commands (provider direct fallback while gateway write path is degraded).
 
 First-time single-bot provision still emits the legacy `PROVISION_SUMMARY_*` / `ROOTCA_PEM_B64_*` markers for the bundled `provision-single-bot.sh` path.
