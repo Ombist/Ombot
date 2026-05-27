@@ -84,3 +84,30 @@ ombist_wait_for_apt_lock() {
     waited=$((waited + poll))
   done
 }
+
+# Remove Ubuntu/Debian distro nodejs + libnode* before installing NodeSource nodejs (avoids
+# "trying to overwrite /usr/include/node/common.gypi" from libnode-dev).
+# Requires ombist_root_apt_get in the sourcing script.
+ombist_apt_purge_distro_node_before_nodesource() {
+  if [[ "$(ombist_detect_pkg_manager 2>/dev/null || printf '')" != "apt" ]]; then
+    return 0
+  fi
+  if ! declare -F ombist_root_apt_get >/dev/null 2>&1; then
+    echo "ombist-provision: ombist_apt_purge_distro_node_before_nodesource requires ombist_root_apt_get" >&2
+    return 1
+  fi
+  if declare -F ombist_wait_for_apt_lock >/dev/null 2>&1; then
+    ombist_wait_for_apt_lock || return 1
+  fi
+  echo "ombist-provision: purging distro nodejs/libnode packages before NodeSource install..."
+  ombist_root_apt_get purge -y nodejs npm libnode-dev nodejs-doc 2>/dev/null || true
+  local libnodes pkg
+  libnodes="$(dpkg-query -W -f='${Package}\n' 'libnode*' 2>/dev/null | grep -v '^$' || true)"
+  if [[ -n "${libnodes}" ]]; then
+    while IFS= read -r pkg; do
+      [[ -n "${pkg}" ]] || continue
+      ombist_root_apt_get purge -y "${pkg}" 2>/dev/null || true
+    done <<< "${libnodes}"
+  fi
+  ombist_root_apt_get autoremove -y || true
+}
