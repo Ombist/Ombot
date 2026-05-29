@@ -32,6 +32,28 @@ export function mergePlugins(curList, patchList) {
 }
 
 /**
+ * Hoist mistaken `models.models.providers` (legacy iOS route-sync bug) to `models.providers`.
+ * @param {Record<string, unknown>} obj
+ */
+export function normalizeNestedModelsKey(obj) {
+  const models = obj?.models;
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return;
+  const nested = /** @type {Record<string, unknown>} */ (models).models;
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return;
+  const nestedProviders = nested.providers;
+  if (!nestedProviders || typeof nestedProviders !== 'object' || Array.isArray(nestedProviders)) {
+    return;
+  }
+  const modelsRec = /** @type {Record<string, unknown>} */ (models);
+  if (!modelsRec.providers || typeof modelsRec.providers !== 'object' || Array.isArray(modelsRec.providers)) {
+    modelsRec.providers = nestedProviders;
+  } else {
+    deepMerge(/** @type {Record<string, unknown>} */ (modelsRec.providers), nestedProviders);
+  }
+  delete modelsRec.models;
+}
+
+/**
  * Deep-merge `source` into `target` (mutates target). Arrays are replaced except `plugins`.
  * @param {Record<string, unknown>} target
  * @param {Record<string, unknown>} source
@@ -62,7 +84,11 @@ export function deepMerge(target, source) {
  */
 export function mergeOpenclawPatch(base, patch) {
   const cur = JSON.parse(JSON.stringify(base));
-  deepMerge(cur, patch);
+  normalizeNestedModelsKey(cur);
+  const patchClone = JSON.parse(JSON.stringify(patch));
+  normalizeNestedModelsKey(patchClone);
+  deepMerge(cur, patchClone);
+  normalizeNestedModelsKey(cur);
   return cur;
 }
 
@@ -75,7 +101,10 @@ export function mergeOrderedFragments(fragments) {
   const out = {};
   for (const frag of fragments) {
     if (!frag || typeof frag !== 'object' || Array.isArray(frag)) continue;
-    deepMerge(out, frag);
+    const normalized = JSON.parse(JSON.stringify(frag));
+    normalizeNestedModelsKey(normalized);
+    deepMerge(out, normalized);
   }
+  normalizeNestedModelsKey(out);
   return out;
 }

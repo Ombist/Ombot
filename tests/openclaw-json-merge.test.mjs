@@ -4,6 +4,7 @@ import {
   mergeOpenclawPatch,
   mergeOrderedFragments,
   mergePlugins,
+  normalizeNestedModelsKey,
 } from '../tools/openclaw-json-merge.mjs';
 
 describe('mergePlugins', () => {
@@ -40,5 +41,36 @@ describe('deepMerge', () => {
     const t = { x: [1, 2] };
     deepMerge(t, { x: [3] });
     expect(t.x).toEqual([3]);
+  });
+});
+
+describe('normalizeNestedModelsKey', () => {
+  it('hoists models.models.providers to models.providers', () => {
+    const cfg = {
+      models: {
+        models: {
+          providers: {
+            blockrun: { baseUrl: 'http://127.0.0.1:8402/v1' },
+          },
+        },
+      },
+    };
+    normalizeNestedModelsKey(cfg);
+    expect(cfg.models.models).toBeUndefined();
+    expect(cfg.models.providers.blockrun.baseUrl).toBe('http://127.0.0.1:8402/v1');
+  });
+
+  it('mergeOpenclawPatch repairs legacy nested models patch', () => {
+    const base = {};
+    const patch = {
+      models: {
+        models: {
+          providers: { blockrun: { baseUrl: 'http://127.0.0.1:8402/v1' } },
+        },
+      },
+    };
+    const merged = mergeOpenclawPatch(base, patch);
+    expect(merged.models.models).toBeUndefined();
+    expect(merged.models.providers.blockrun.baseUrl).toBe('http://127.0.0.1:8402/v1');
   });
 });
