@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { spawnSync } from 'child_process';
 import {
   deepMerge,
+  hasInvalidNestedModelsKey,
   mergeOpenclawPatch,
   mergeOrderedFragments,
   mergePlugins,
@@ -41,6 +46,38 @@ describe('deepMerge', () => {
     const t = { x: [1, 2] };
     deepMerge(t, { x: [3] });
     expect(t.x).toEqual([3]);
+  });
+});
+
+describe('hasInvalidNestedModelsKey', () => {
+  it('detects nested models.models', () => {
+    expect(
+      hasInvalidNestedModelsKey({
+        models: { models: { providers: { blockrun: {} } } },
+      })
+    ).toBe(true);
+    expect(
+      hasInvalidNestedModelsKey({
+        models: { providers: { blockrun: {} } },
+      })
+    ).toBe(false);
+  });
+});
+
+describe('openclaw-validate-runtime-config.mjs', () => {
+  it('--repair fixes nested models and exits 0', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-validate-'));
+    const cfgPath = path.join(dir, 'openclaw.json');
+    fs.writeFileSync(
+      cfgPath,
+      `${JSON.stringify({ models: { models: { providers: { blockrun: { baseUrl: 'http://127.0.0.1:8402/v1' } } } } }, null, 2)}\n`
+    );
+    const script = path.join(process.cwd(), 'tools/openclaw-validate-runtime-config.mjs');
+    const r = spawnSync(process.execPath, [script, '--repair', cfgPath], { encoding: 'utf8' });
+    expect(r.status).toBe(0);
+    const fixed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    expect(fixed.models.models).toBeUndefined();
+    expect(fixed.models.providers.blockrun.baseUrl).toBe('http://127.0.0.1:8402/v1');
   });
 });
 

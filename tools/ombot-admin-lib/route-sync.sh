@@ -2,6 +2,21 @@
 # Route sync for Ombist_IOS: merge openclaw patch, optional cost config, optional auth profiles.
 # shellcheck shell=bash
 
+# After patch/compose: reject or repair invalid models.models (legacy route-sync bug).
+ombist_validate_openclaw_runtime_config() {
+  local runtime_path="$1"
+  local tools_dir="$2"
+  local node_bin="$3"
+  [[ -n "${runtime_path}" ]] || return 0
+  [[ -f "${runtime_path}" ]] || return 0
+  [[ -n "${tools_dir}" ]] || return 0
+  [[ -f "${tools_dir}/openclaw-validate-runtime-config.mjs" ]] || return 0
+  if "${node_bin}" "${tools_dir}/openclaw-validate-runtime-config.mjs" --repair "${runtime_path}" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
 ombist_cmd_route_sync_main() {
   local cfg="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
   local runtime_cfg="${OPENCLAW_RUNTIME_CONFIG_PATH:-/home/ombot/.openclaw/openclaw.json}"
@@ -131,6 +146,10 @@ ombist_cmd_route_sync_main() {
       ombist_as_root chown "${ombot_user}:${ombot_group}" "${runtime_cfg}" 2>/dev/null || ombist_as_root chown "ombot:${ombot_group}" "${runtime_cfg}" 2>/dev/null || true
       ombist_as_root chown "root:${ombot_group}" "${cfg}" 2>/dev/null || ombist_as_root chown root:root "${cfg}" 2>/dev/null || true
       ombist_as_root chmod 640 "${runtime_cfg}" "${cfg}" 2>/dev/null || true
+      if ! ombist_validate_openclaw_runtime_config "${runtime_cfg}" "${ombot_tools_dir}" "${node_bin}"; then
+        ombist_emit_envelope false "route_sync" "invalid openclaw models shape after compose." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid models.models in runtime openclaw.json (expected models.providers); restore .bak or fix 40-route-sync-patch.json"}]'
+        return 0
+      fi
     else
       if [[ -z "${ombot_tools_dir}" ]] || [[ ! -f "${ombot_tools_dir}/openclaw-merge-patch.mjs" ]]; then
         cat > "${merge_js}" <<'NODE'
@@ -219,6 +238,17 @@ NODE
         else
           ombist_as_root chown "${ombot_user}:${ombot_group}" "${runtime_cfg}" 2>/dev/null || true
           ombist_as_root chmod 640 "${runtime_cfg}" 2>/dev/null || true
+        fi
+      fi
+      if [[ -f "${runtime_cfg}" ]] && [[ -n "${ombot_tools_dir}" ]] && [[ -f "${ombot_tools_dir}/openclaw-validate-runtime-config.mjs" ]]; then
+        if ! ombist_validate_openclaw_runtime_config "${runtime_cfg}" "${ombot_tools_dir}" "${node_bin}"; then
+          ombist_emit_envelope false "route_sync" "invalid openclaw models shape after merge." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid models.models in runtime openclaw.json (expected models.providers)"}]'
+          return 0
+        fi
+      elif [[ -f "${cfg}" ]] && [[ -n "${ombot_tools_dir}" ]] && [[ -f "${ombot_tools_dir}/openclaw-validate-runtime-config.mjs" ]]; then
+        if ! ombist_validate_openclaw_runtime_config "${cfg}" "${ombot_tools_dir}" "${node_bin}"; then
+          ombist_emit_envelope false "route_sync" "invalid openclaw models shape after merge." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid models.models in openclaw.json (expected models.providers)"}]'
+          return 0
         fi
       fi
     fi

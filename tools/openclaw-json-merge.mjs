@@ -54,6 +54,19 @@ export function normalizeNestedModelsKey(obj) {
 }
 
 /**
+ * @param {unknown} obj
+ * @returns {boolean}
+ */
+export function hasInvalidNestedModelsKey(obj) {
+  const models = /** @type {Record<string, unknown> | undefined} */ (
+    obj && typeof obj === 'object' && !Array.isArray(obj) ? obj.models : undefined
+  );
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return false;
+  const nested = /** @type {Record<string, unknown>} */ (models).models;
+  return !!(nested && typeof nested === 'object' && !Array.isArray(nested));
+}
+
+/**
  * Deep-merge `source` into `target` (mutates target). Arrays are replaced except `plugins`.
  * @param {Record<string, unknown>} target
  * @param {Record<string, unknown>} source

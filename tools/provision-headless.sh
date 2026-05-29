@@ -154,7 +154,7 @@ else
 fi
 run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; npm --prefix '${OMBOT_REPO_DIR}' install --omit=dev"
 
-: "${OMBIST_INSTALL_OMBROUTER:=1}"
+: "${OMBIST_INSTALL_OMBROUTER:=0}"
 if [[ "${OMBIST_INSTALL_OMBROUTER}" != "0" ]]; then
   echo "ombist-provision: cloning/building OmbRouter (without OpenClaw plugin registration)..."
   if as_root test -d "${OMBROUTER_REPO_DIR}/.git"; then
