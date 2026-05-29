@@ -1,21 +1,7 @@
 #!/usr/bin/env bash
 # Route sync for Ombist_IOS: merge openclaw patch, optional cost config, optional auth profiles.
+# Expects ombist_validate_openclaw_runtime_config / ombist_wait_gateway_loopback from openclaw-repair-route.sh.
 # shellcheck shell=bash
-
-# After patch/compose: reject or repair invalid models.models (legacy route-sync bug).
-ombist_validate_openclaw_runtime_config() {
-  local runtime_path="$1"
-  local tools_dir="$2"
-  local node_bin="$3"
-  [[ -n "${runtime_path}" ]] || return 0
-  [[ -f "${runtime_path}" ]] || return 0
-  [[ -n "${tools_dir}" ]] || return 0
-  [[ -f "${tools_dir}/openclaw-validate-runtime-config.mjs" ]] || return 0
-  if "${node_bin}" "${tools_dir}/openclaw-validate-runtime-config.mjs" --repair "${runtime_path}" >/dev/null 2>&1; then
-    return 0
-  fi
-  return 1
-}
 
 ombist_cmd_route_sync_main() {
   local cfg="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
@@ -97,6 +83,8 @@ ombist_cmd_route_sync_main() {
   local did_cost=false
   local did_auth=false
   local gw_restart="no_unit"
+  local gateway_listening=false
+  local gw_port="${OPENCLAW_GATEWAY_PORT:-18789}"
 
   if [[ -n "${patch_b64}" ]]; then
     did_patch=true
@@ -130,6 +118,10 @@ ombist_cmd_route_sync_main() {
         ombist_emit_envelope false "route_sync" "openclaw fragment merge failed." "{}" "[]" "${merge_err_json}"
         return 0
       fi
+      if ! ombist_validate_openclaw_runtime_config "${merged_frag}" "${ombot_tools_dir}" "${node_bin}"; then
+        ombist_emit_envelope false "route_sync" "invalid openclaw patch before fragment write." "{}" "[]" '[{"code":"MERGE_FAILED","message":"route patch models shape invalid (blockrun or nested models); fix iOS patch or OMB template"}]'
+        return 0
+      fi
       if ! ombist_as_root cp "${merged_frag}" "${frag_40}"; then
         ombist_emit_envelope false "route_sync" "fragment write failed." "{}" "[]" '[{"code":"MERGE_FAILED","message":"failed to write 40-route-sync-patch.json"}]'
         return 0
@@ -146,8 +138,9 @@ ombist_cmd_route_sync_main() {
       ombist_as_root chown "${ombot_user}:${ombot_group}" "${runtime_cfg}" 2>/dev/null || ombist_as_root chown "ombot:${ombot_group}" "${runtime_cfg}" 2>/dev/null || true
       ombist_as_root chown "root:${ombot_group}" "${cfg}" 2>/dev/null || ombist_as_root chown root:root "${cfg}" 2>/dev/null || true
       ombist_as_root chmod 640 "${runtime_cfg}" "${cfg}" 2>/dev/null || true
+      ombist_repair_openclaw_json_paths "${ombot_tools_dir}" "${node_bin}" "${runtime_cfg}" "${cfg}" "${frag_40}"
       if ! ombist_validate_openclaw_runtime_config "${runtime_cfg}" "${ombot_tools_dir}" "${node_bin}"; then
-        ombist_emit_envelope false "route_sync" "invalid openclaw models shape after compose." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid models.models in runtime openclaw.json (expected models.providers); restore .bak or fix 40-route-sync-patch.json"}]'
+        ombist_emit_envelope false "route_sync" "invalid openclaw models shape after compose." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid openclaw models after compose; run ombot-admin openclaw config repair-route"}]'
         return 0
       fi
     else
@@ -240,14 +233,21 @@ NODE
           ombist_as_root chmod 640 "${runtime_cfg}" 2>/dev/null || true
         fi
       fi
+      if [[ -n "${ombot_tools_dir}" ]] && [[ -f "${ombot_tools_dir}/openclaw-validate-runtime-config.mjs" ]]; then
+        if ! ombist_validate_openclaw_runtime_config "${merge_out}" "${ombot_tools_dir}" "${node_bin}"; then
+          ombist_emit_envelope false "route_sync" "invalid openclaw patch before merge write." "{}" "[]" '[{"code":"MERGE_FAILED","message":"merged patch models shape invalid"}]'
+          return 0
+        fi
+      fi
+      ombist_repair_openclaw_json_paths "${ombot_tools_dir}" "${node_bin}" "${runtime_cfg}" "${cfg}"
       if [[ -f "${runtime_cfg}" ]] && [[ -n "${ombot_tools_dir}" ]] && [[ -f "${ombot_tools_dir}/openclaw-validate-runtime-config.mjs" ]]; then
         if ! ombist_validate_openclaw_runtime_config "${runtime_cfg}" "${ombot_tools_dir}" "${node_bin}"; then
-          ombist_emit_envelope false "route_sync" "invalid openclaw models shape after merge." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid models.models in runtime openclaw.json (expected models.providers)"}]'
+          ombist_emit_envelope false "route_sync" "invalid openclaw models shape after merge." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid openclaw models after merge"}]'
           return 0
         fi
       elif [[ -f "${cfg}" ]] && [[ -n "${ombot_tools_dir}" ]] && [[ -f "${ombot_tools_dir}/openclaw-validate-runtime-config.mjs" ]]; then
         if ! ombist_validate_openclaw_runtime_config "${cfg}" "${ombot_tools_dir}" "${node_bin}"; then
-          ombist_emit_envelope false "route_sync" "invalid openclaw models shape after merge." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid models.models in openclaw.json (expected models.providers)"}]'
+          ombist_emit_envelope false "route_sync" "invalid openclaw models shape after merge." "{}" "[]" '[{"code":"MERGE_FAILED","message":"invalid openclaw.json after merge"}]'
           return 0
         fi
       fi
@@ -340,29 +340,45 @@ NODE
   fi
 
   if [[ "${did_patch}" == "true" || "${did_cost}" == "true" || "${did_auth}" == "true" ]]; then
-    if ombist_as_root systemctl list-unit-files 2>/dev/null | grep -q '^ombist-openclaw-gateway.service'; then
-      if ombist_as_root systemctl restart ombist-openclaw-gateway.service 2>/dev/null; then
+    local gw_unit
+    gw_unit="$(ombist_gateway_pick_unit "ombist-openclaw-gateway.service" "openclaw-gateway@Ombist_IOS.service")"
+    if [[ "${did_patch}" == "true" ]]; then
+      if ombist_as_root systemctl restart "${gw_unit}" 2>/dev/null; then
         gw_restart="restarted"
-      else
+      elif [[ -n "${gw_unit}" ]]; then
         gw_restart="restart_failed"
+      fi
+      if ombist_wait_gateway_loopback "${gw_port}" 60; then
+        gateway_listening=true
+      elif [[ "${gw_restart}" == "restarted" ]]; then
+        gw_restart="not_listening"
       fi
     fi
   fi
 
-  local data summary inferred_json
+  local data summary inferred_json sync_ok=true
   if [[ "${patch_target_inferred_fragment}" == "true" ]]; then
     inferred_json="true"
   else
     inferred_json="false"
   fi
-  data="$(printf '{"didPatch":%s,"didCostConfig":%s,"didAuthSync":%s,"costConfigPath":%s,"gatewayRestart":%s,"openclawPatchTarget":%s,"openclawPatchTargetInferredFragment":%s}' \
+  if [[ "${did_patch}" == "true" && "${gateway_listening}" != "true" ]]; then
+    sync_ok=false
+  fi
+  data="$(printf '{"didPatch":%s,"didCostConfig":%s,"didAuthSync":%s,"costConfigPath":%s,"gatewayRestart":%s,"gatewayListening":%s,"gatewayPort":%s,"openclawPatchTarget":%s,"openclawPatchTargetInferredFragment":%s}' \
     "${did_patch}" \
     "${did_cost}" \
     "${did_auth}" \
     "$(ombist_json_escape_string "${cost_path}")" \
     "$(ombist_json_escape_string "${gw_restart}")" \
+    "${gateway_listening}" \
+    "$(ombist_json_escape_string "${gw_port}")" \
     "$(ombist_json_escape_string "${patch_target}")" \
     "${inferred_json}")"
-  summary="ombist_route_sync_ok; gateway=${gw_restart}"
-  ombist_emit_envelope true "route_sync" "${summary}" "${data}" "[]" "[]"
+  summary="ombist_route_sync_ok; gateway=${gw_restart}; listening=${gateway_listening}"
+  if [[ "${sync_ok}" == "true" ]]; then
+    ombist_emit_envelope true "route_sync" "${summary}" "${data}" "[]" "[]"
+  else
+    ombist_emit_envelope false "route_sync" "${summary}" "${data}" "[]" '[{"code":"GATEWAY_NOT_READY","message":"openclaw patch applied but gateway port not listening"}]'
+  fi
 }

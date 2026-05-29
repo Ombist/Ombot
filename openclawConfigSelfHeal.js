@@ -8,6 +8,7 @@ import crypto from 'crypto';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { mergeOrderedFragments } from './tools/openclaw-json-merge.mjs';
+import { repairOpenClawJsonFile } from './tools/openclaw-repair-route.mjs';
 import { classifyGatewayError } from './gatewayErrorClassifier.js';
 import { logger } from './logger.js';
 import { gatewayLoopbackReachable } from './metrics.js';
@@ -143,6 +144,31 @@ function readRuntimeGatewayMode(runtimePath) {
  * Ensure `10-gateway-transport.json` declares gateway.mode=local before compose.
  * @returns {{ patched: boolean; path?: string }}
  */
+/**
+ * Repair invalid route fragments / runtime before compose (blockrun overlay, nested models).
+ * @returns {string[]}
+ */
+function repairOpenClawConfigsBeforeCompose(fragmentsDir, runtimePath, etcPath) {
+  const actions = [];
+  if (fragmentsDir && fs.existsSync(fragmentsDir)) {
+    for (const fp of listFragmentFiles(fragmentsDir)) {
+      const r = repairOpenClawJsonFile(fp);
+      if (r.changed) {
+        actions.push(`repaired_fragment:${path.basename(fp)}`);
+      }
+    }
+  }
+  if (runtimePath && fs.existsSync(runtimePath)) {
+    const r = repairOpenClawJsonFile(runtimePath);
+    if (r.changed) actions.push('repaired_runtime');
+  }
+  if (etcPath && etcPath !== runtimePath && fs.existsSync(etcPath)) {
+    const r = repairOpenClawJsonFile(etcPath);
+    if (r.changed) actions.push('repaired_etc');
+  }
+  return actions;
+}
+
 function ensureGatewayModeLocalInFragments(fragmentsDir) {
   const transportPath = path.join(fragmentsDir, '10-gateway-transport.json');
   if (!fs.existsSync(transportPath) || !pathWritable(transportPath)) {
@@ -464,11 +490,15 @@ export async function runOpenClawConfigSelfHeal(opts = {}) {
     const trigger = opts.trigger || 'manual';
     logger.info('openclaw_self_heal_start', { trigger });
 
-    const { fragmentsDir } = resolveConfigPaths();
+    const { fragmentsDir, runtimePath, etcPath } = resolveConfigPaths();
     let health = assessOpenClawConfigHealth();
     let composed = false;
 
     if (health.needsCompose) {
+      const repairActions = repairOpenClawConfigsBeforeCompose(fragmentsDir, runtimePath, etcPath);
+      for (const a of repairActions) {
+        actions.push(a);
+      }
       const modePatch = ensureGatewayModeLocalInFragments(fragmentsDir);
       if (modePatch.patched) {
         actions.push('fragment_mode_patched_local');

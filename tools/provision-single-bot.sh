@@ -148,6 +148,26 @@ require_active_service() {
   exit 20
 }
 
+assert_gateway_port_listening() {
+  local port="${1:-18789}"
+  local wait_seconds="${2:-60}"
+  local i
+  for ((i=0; i<=wait_seconds; i++)); do
+    if command -v ss >/dev/null 2>&1; then
+      if ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q LISTEN; then
+        return 0
+      fi
+    elif command -v nc >/dev/null 2>&1; then
+      if nc -z 127.0.0.1 "${port}" 2>/dev/null; then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "ombist-provision-single-bot: gateway port ${port} not listening on loopback after ${wait_seconds}s" >&2
+  exit 24
+}
+
 assert_openclaw_gateway_mode_local() {
   local cfg="$1"
   local mode=""
@@ -483,7 +503,7 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=${OMBOT_DATA_DIR} ${OMBOT_REPO_DIR}
+ReadWritePaths=${OMBOT_DATA_DIR} ${OMBOT_REPO_DIR} ${OMBOT_HOME}/.openclaw
 PrivateTmp=true
 
 [Install]
@@ -548,6 +568,7 @@ as_root systemctl restart ombist-openclaw-gateway.service
 sleep 2
 as_root systemctl restart ombist-ombot.service
 require_active_service "ombist-openclaw-gateway.service"
+assert_gateway_port_listening "${OPENCLAW_GATEWAY_PORT}" 60
 require_active_service "ombist-ombot.service"
 require_active_service "nginx.service"
 

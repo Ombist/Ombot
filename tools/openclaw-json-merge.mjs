@@ -67,6 +67,60 @@ export function hasInvalidNestedModelsKey(obj) {
 }
 
 /**
+ * OpenClaw rejects custom provider overlays without a non-empty `models` list.
+ * @param {unknown} obj
+ * @returns {boolean}
+ */
+export function hasInvalidBlockrunProviderOverlay(obj) {
+  const models = /** @type {Record<string, unknown> | undefined} */ (
+    obj && typeof obj === 'object' && !Array.isArray(obj) ? obj.models : undefined
+  );
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return false;
+  const providers = /** @type {Record<string, unknown>} */ (models).providers;
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) return false;
+  const blockrun = providers.blockrun;
+  if (!blockrun || typeof blockrun !== 'object' || Array.isArray(blockrun)) return false;
+  const list = /** @type {{ models?: unknown }} */ (blockrun).models;
+  return !(Array.isArray(list) && list.length > 0);
+}
+
+/**
+ * @param {Record<string, unknown>} obj
+ * @returns {boolean} true when repair changed config
+ */
+export function repairBlockrunProviderOverlay(obj) {
+  if (!hasInvalidBlockrunProviderOverlay(obj)) return false;
+  const models = /** @type {Record<string, unknown>} */ (obj).models;
+  if (!models || typeof models !== 'object' || Array.isArray(models)) return false;
+  if (!models.providers || typeof models.providers !== 'object' || Array.isArray(models.providers)) {
+    models.providers = {};
+  }
+  const providers = /** @type {Record<string, unknown>} */ (models.providers);
+  const blockrun = /** @type {Record<string, unknown>} */ (providers.blockrun);
+  const baseUrl = typeof blockrun.baseUrl === 'string' ? blockrun.baseUrl.trim() : '';
+  if (!baseUrl) {
+    delete providers.blockrun;
+    return true;
+  }
+  if (typeof blockrun.api !== 'string' || !blockrun.api.trim()) {
+    blockrun.api = 'openai-completions';
+  }
+  if (typeof blockrun.apiKey !== 'string' || !blockrun.apiKey.trim()) {
+    blockrun.apiKey = 'x402-proxy-handles-auth';
+  }
+  blockrun.models = [{ id: 'blockrun/auto' }];
+  return true;
+}
+
+/**
+ * @param {unknown} obj
+ * @returns {boolean}
+ */
+export function hasInvalidOpenClawModelsConfig(obj) {
+  return hasInvalidNestedModelsKey(obj) || hasInvalidBlockrunProviderOverlay(obj);
+}
+
+/**
  * Deep-merge `source` into `target` (mutates target). Arrays are replaced except `plugins`.
  * @param {Record<string, unknown>} target
  * @param {Record<string, unknown>} source
@@ -102,6 +156,7 @@ export function mergeOpenclawPatch(base, patch) {
   normalizeNestedModelsKey(patchClone);
   deepMerge(cur, patchClone);
   normalizeNestedModelsKey(cur);
+  repairBlockrunProviderOverlay(cur);
   return cur;
 }
 
@@ -119,5 +174,6 @@ export function mergeOrderedFragments(fragments) {
     deepMerge(out, normalized);
   }
   normalizeNestedModelsKey(out);
+  repairBlockrunProviderOverlay(out);
   return out;
 }

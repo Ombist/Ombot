@@ -418,7 +418,7 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=${OMBOT_DATA_DIR} ${OMBOT_REPO_DIR}
+ReadWritePaths=${OMBOT_DATA_DIR} ${OMBOT_REPO_DIR} ${OMBOT_HOME}/.openclaw
 PrivateTmp=true
 
 [Install]

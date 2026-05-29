@@ -5,11 +5,13 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import {
   deepMerge,
+  hasInvalidBlockrunProviderOverlay,
   hasInvalidNestedModelsKey,
   mergeOpenclawPatch,
   mergeOrderedFragments,
   mergePlugins,
   normalizeNestedModelsKey,
+  repairBlockrunProviderOverlay,
 } from '../tools/openclaw-json-merge.mjs';
 
 describe('mergePlugins', () => {
@@ -64,8 +66,53 @@ describe('hasInvalidNestedModelsKey', () => {
   });
 });
 
+describe('hasInvalidBlockrunProviderOverlay', () => {
+  it('detects blockrun with only baseUrl', () => {
+    expect(
+      hasInvalidBlockrunProviderOverlay({
+        models: { providers: { blockrun: { baseUrl: 'http://127.0.0.1:8402/v1' } } },
+      })
+    ).toBe(true);
+    expect(
+      hasInvalidBlockrunProviderOverlay({
+        models: {
+          providers: {
+            blockrun: {
+              baseUrl: 'http://127.0.0.1:8402/v1',
+              api: 'openai-completions',
+              apiKey: 'x',
+              models: [{ id: 'blockrun/auto' }],
+            },
+          },
+        },
+      })
+    ).toBe(false);
+  });
+});
+
+describe('stripOfficialOrphanBlockrun', () => {
+  it('removes blockrun-only overlay when no ombrouter plugin', async () => {
+    const { stripOfficialOrphanBlockrun } = await import('../tools/openclaw-repair-route.mjs');
+    const cfg = {
+      agents: { defaults: { model: { primary: 'openai/gpt-4o-mini', fallbacks: [] } } },
+      models: { providers: { blockrun: { baseUrl: 'http://127.0.0.1:8402/v1' } } },
+    };
+    expect(stripOfficialOrphanBlockrun(cfg)).toBe(true);
+    expect(cfg.models).toBeUndefined();
+  });
+});
+
+describe('repairBlockrunProviderOverlay', () => {
+  it('adds minimal models list for legacy blockrun-only patch', () => {
+    const cfg = { models: { providers: { blockrun: { baseUrl: 'http://127.0.0.1:8402/v1' } } } };
+    expect(repairBlockrunProviderOverlay(cfg)).toBe(true);
+    expect(cfg.models.providers.blockrun.models).toEqual([{ id: 'blockrun/auto' }]);
+    expect(cfg.models.providers.blockrun.api).toBe('openai-completions');
+  });
+});
+
 describe('openclaw-validate-runtime-config.mjs', () => {
-  it('--repair fixes nested models and exits 0', () => {
+  it('--repair fixes nested models and blockrun overlay then exits 0', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-validate-'));
     const cfgPath = path.join(dir, 'openclaw.json');
     fs.writeFileSync(
@@ -78,6 +125,7 @@ describe('openclaw-validate-runtime-config.mjs', () => {
     const fixed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
     expect(fixed.models.models).toBeUndefined();
     expect(fixed.models.providers.blockrun.baseUrl).toBe('http://127.0.0.1:8402/v1');
+    expect(fixed.models.providers.blockrun.models).toEqual([{ id: 'blockrun/auto' }]);
   });
 });
 
@@ -109,5 +157,14 @@ describe('normalizeNestedModelsKey', () => {
     const merged = mergeOpenclawPatch(base, patch);
     expect(merged.models.models).toBeUndefined();
     expect(merged.models.providers.blockrun.baseUrl).toBe('http://127.0.0.1:8402/v1');
+    expect(merged.models.providers.blockrun.models).toEqual([{ id: 'blockrun/auto' }]);
+  });
+
+  it('mergeOpenclawPatch repairs blockrun-only provider overlay', () => {
+    const merged = mergeOpenclawPatch(
+      {},
+      { models: { providers: { blockrun: { baseUrl: 'http://127.0.0.1:8402/v1' } } } }
+    );
+    expect(merged.models.providers.blockrun.models).toEqual([{ id: 'blockrun/auto' }]);
   });
 });

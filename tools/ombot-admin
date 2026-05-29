@@ -3,7 +3,7 @@
 # Install: /opt/ombot/bin/ombot-admin + /opt/ombot/bin/ombot-admin-lib/
 set -uo pipefail
 
-OMBOT_ADMIN_VERSION="1.5.0"
+OMBOT_ADMIN_VERSION="1.6.0"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="${ROOT}/ombot-admin-lib"
 
@@ -44,9 +44,11 @@ die() {
 # shellcheck source=/dev/null
 . "${LIB}/openclaw-compose.sh"
 # shellcheck source=/dev/null
-. "${LIB}/route-sync.sh"
-# shellcheck source=/dev/null
 . "${LIB}/gateway-stability.sh"
+# shellcheck source=/dev/null
+. "${LIB}/openclaw-repair-route.sh"
+# shellcheck source=/dev/null
+. "${LIB}/route-sync.sh"
 # shellcheck source=/dev/null
 . "${LIB}/openai-env.sh"
 
@@ -65,13 +67,15 @@ Usage:
   ombot-admin ombot health-port ensure-internal [--json]
   ombot-admin openclaw compose [--dry-run] [--rollback] [--strict-keys] [--no-flock] [--json]
   ombot-admin openclaw config ensure-local [--json]
+  ombot-admin openclaw config repair-route [--json]
+  ombot-admin tools install [--json]
   ombot-admin gateway health-gates [--json]
   ombot-admin gateway config-drift [--json]
 EOF
 }
 
 cmd_version() {
-  local caps='["tls","preflight","systemctl","route_sync","router","router_probe","health_port","openclaw_config","openclaw_compose","openai_env"]'
+  local caps='["tls","preflight","systemctl","route_sync","router","router_probe","health_port","openclaw_config","openclaw_compose","openclaw_repair_route","openai_env","tools_install"]'
   local data
   data="$(printf '{"version":%s,"capabilities":%s}' "$(ombist_json_escape_string "${OMBOT_ADMIN_VERSION}")" "${caps}")"
   ombist_emit_envelope true "version" "ombot-admin ${OMBOT_ADMIN_VERSION}" "${data}" "[]" "[]"
@@ -253,14 +257,21 @@ main() {
       [[ ${#args[@]} -ge 2 ]] || die "openclaw needs subcommand"
       case "${args[1]}" in
         config)
-          [[ "${args[2]:-}" == "ensure-local" ]] || die "openclaw config only supports ensure-local"
-          ombist_cmd_openclaw_config_ensure_local_main
+          case "${args[2]:-}" in
+            ensure-local) ombist_cmd_openclaw_config_ensure_local_main ;;
+            repair-route) ombist_cmd_openclaw_config_repair_route_main ;;
+            *) die "openclaw config supports: ensure-local | repair-route" ;;
+          esac
           ;;
         compose)
           ombist_cmd_openclaw_compose_main "${args[@]:2}"
           ;;
-        *) die "openclaw supports: config ensure-local | compose" ;;
+        *) die "openclaw supports: config ensure-local | config repair-route | compose" ;;
       esac
+      ;;
+    tools)
+      [[ "${args[1]:-}" == "install" ]] || die "tools only supports install"
+      ombist_cmd_tools_install_main
       ;;
     gateway)
       [[ ${#args[@]} -ge 2 ]] || die "gateway needs subcommand"
