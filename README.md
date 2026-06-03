@@ -173,6 +173,32 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_REQUIRE_MIDDLEWARE_T
 
 Prometheus：`ombot_gateway_bridge_connected`、`ombot_gateway_bridge_errors_total`、`ombot_gateway_bridge_phone_to_gateway_total`、`ombot_gateway_bridge_gateway_to_phone_total`、`ombot_gateway_bridge_reject_total{phase,category,reason}`、`ombot_gateway_bridge_gate_state{gate}`、`ombot_gateway_bridge_fallback_total{source,reason}`。
 
+## Hermes Agent 橋接（與 OpenClaw 互斥）
+
+佈署時在 iOS **新增機器** 選 **Hermes Agent**，或設 `OMBIST_AGENT_RUNTIME=hermes` 執行 `provision-headless.sh` / `provision-single-bot.sh`。會安裝 Hermes CLI、`ombist-hermes-gateway.service`（`hermes gateway` + API Server on `127.0.0.1:8642`），並在 `/etc/ombot/ombot.env` 寫入 **`HERMES_AGENT_BRIDGE=1`**（**不要**同時設 `OPENCLAW_GATEWAY_BRIDGE=1`）。
+
+Ombot 模組 `hermesAgentBridge.js` 依 [Hermes API Server 文件](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server) 對齊：
+
+- 預設 **`HERMES_BRIDGE_API_MODE=responses`**：`POST /v1/responses`，`conversation` + `input`（伺服器端多輪）
+- 可改 **`chat_completions`**：`POST /v1/chat/completions`，Ombot 本地累積 `messages[]`（文件標為 stateless）
+- Bearer `HERMES_API_SERVER_KEY`；`X-Hermes-Session-Id` + `X-Hermes-Session-Key` 分別對應 transcript / 長期記憶 scope
+- `bridgeConnected` 探測 `GET /v1/health`（備援 `/v1/models`）
+
+詳見 [`docs/hermes-agent-integration.md`](../docs/hermes-agent-integration.md)、[`docs/hermes-api-server-audit.md`](../docs/hermes-api-server-audit.md)。
+
+| Env | Default | Description |
+|-----|---------|-------------|
+| `HERMES_AGENT_BRIDGE` | (unset) | `1` / `true` 啟用 Hermes 橋接 |
+| `HERMES_API_SERVER_URL` | `http://127.0.0.1:8642/v1` | Hermes OpenAI-compatible API base |
+| `HERMES_API_SERVER_KEY` | (from `hermes.env`) | Bearer token |
+| `HERMES_BRIDGE_AGENT_ID` | `default` | 與 Ombers session 對齊 |
+| `HERMES_BRIDGE_CONVERSATION_ID` | `default` | 與 Phone `conversationId` 對齊 |
+| `HERMES_BRIDGE_PARTICIPANT_ID` | `default` | 與 Phone `participantId` 對齊 |
+| `HERMES_BRIDGE_MODEL` | `hermes-agent` | Request `model` field (cosmetic per Hermes doc) |
+| `HERMES_BRIDGE_API_MODE` | `responses` | `responses` or `chat_completions` |
+
+Prometheus：`ombot_hermes_bridge_connected`、`ombot_hermes_bridge_errors_total`、`ombot_hermes_bridge_phone_to_hermes_total`、`ombot_hermes_bridge_hermes_to_phone_total`。
+
 ## Health and Metrics
 
 - Health: `GET /healthz` on `HEALTH_PORT`

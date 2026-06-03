@@ -11,6 +11,12 @@ import {
 import { createMiddlewareHttpsAgent } from './middlewareTlsAgent.js';
 import { MachineRelaySession } from './machineRelaySession.js';
 import {
+  getHermesBridgeConnected,
+  shouldStartHermesAgentBridge,
+  startHermesAgentBridge,
+  stopHermesAgentBridge,
+} from './hermesAgentBridge.js';
+import {
   getGatewayBridgeConnected,
   shouldStartGatewayBridge,
   startOpenClawGatewayBridge,
@@ -143,7 +149,15 @@ wss.on('listening', () => {
   startGatewayLoopbackWatchdog();
 });
 
-if (shouldStartGatewayBridge()) {
+function getActiveBridgeConnected() {
+  if (shouldStartHermesAgentBridge()) return getHermesBridgeConnected();
+  return getGatewayBridgeConnected();
+}
+
+if (shouldStartHermesAgentBridge()) {
+  startHermesAgentBridge({ keyPair, config: sessionConfig });
+  logger.info('hermes_agent_bridge_enabled', {});
+} else if (shouldStartGatewayBridge()) {
   startOpenClawGatewayBridge({ keyPair, config: sessionConfig });
   logger.info('openclaw_gateway_bridge_enabled', {});
 }
@@ -231,7 +245,7 @@ wss.on('connection', (clientWs, req) => {
     if (SINGLE_CLIENT_MODE && json.type === 'encrypted') {
       const dec = session.tryDecryptClientBox(raw, json);
       if (dec && dec.json.type === 'ping') {
-        session.handleApplicationPing(dec.json, getGatewayBridgeConnected());
+        session.handleApplicationPing(dec.json, getActiveBridgeConnected());
         return;
       }
       if (dec && dec.json.type === 'req') {
@@ -286,6 +300,7 @@ function gracefulShutdown(signal) {
   logger.warn('shutdown_start', { signal });
   acceptingNewConnections = false;
   stopGatewayLoopbackWatchdog();
+  stopHermesAgentBridge();
   stopOpenClawGatewayBridge();
   for (const ws of wss.clients) {
     ws.close(1001, 'server_shutdown');

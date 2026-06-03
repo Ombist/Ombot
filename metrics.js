@@ -63,6 +63,30 @@ export const gatewayBridgeConnectState = new client.Gauge({
   registers: [register],
 });
 
+export const hermesBridgeConnectState = new client.Gauge({
+  name: 'ombot_hermes_bridge_connected',
+  help: 'Hermes API bridge reachable (1) or not (0)',
+  registers: [register],
+});
+
+export const hermesBridgeErrorsTotal = new client.Counter({
+  name: 'ombot_hermes_bridge_errors_total',
+  help: 'Total Hermes API bridge errors',
+  registers: [register],
+});
+
+export const hermesBridgePhoneToHermesTotal = new client.Counter({
+  name: 'ombot_hermes_bridge_phone_to_hermes_total',
+  help: 'User messages forwarded from Phone to Hermes API',
+  registers: [register],
+});
+
+export const hermesBridgeHermesToPhoneTotal = new client.Counter({
+  name: 'ombot_hermes_bridge_hermes_to_phone_total',
+  help: 'Assistant replies forwarded from Hermes API to Phone',
+  registers: [register],
+});
+
 export const gatewayBridgeErrorsTotal = new client.Counter({
   name: 'ombot_gateway_bridge_errors_total',
   help: 'Total gateway bridge protocol or I/O errors',

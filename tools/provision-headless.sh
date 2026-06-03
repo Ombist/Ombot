@@ -21,6 +21,10 @@ fi
 : "${MACHINE_PORT:?MACHINE_PORT is required}"
 : "${OPENCLAW_MACHINE_SEED:?OPENCLAW_MACHINE_SEED is required}"
 
+OMBIST_AGENT_RUNTIME="${OMBIST_AGENT_RUNTIME:-openclaw}"
+# shellcheck source=provision-hermes-lib.sh
+source "${_OMBIST_PROVISION_DIR}/provision-hermes-lib.sh"
+
 # Default wss for production (TLS must terminate at Nginx or Ombers OMBERS_USE_TLS).
 # For loopback + plain Ombers only, override: MIDDLEWARE_SCHEME=ws OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0
 MIDDLEWARE_SCHEME="${MIDDLEWARE_SCHEME:-wss}"
@@ -147,6 +151,12 @@ if ! nvm use 22 >/dev/null 2>&1; then nvm install 22 >/dev/null; nvm alias defau
 nvm use 22 >/dev/null"
 fi
 ombist_ensure_node22
+
+if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+  echo "ombist-provision: agent runtime=hermes (skipping OpenClaw npm install)"
+  ombist_install_hermes_cli || exit 30
+  ombist_write_hermes_env_file || exit 31
+else
 run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
 export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
@@ -162,6 +172,7 @@ if [[ -z "${OPENCLAW_GATEWAY_TOKEN}" ]]; then
     exit 1
   fi
   echo "ombist-provision: generated gateway token for local auth."
+fi
 fi
 
 echo "ombist-provision: cloning/updating Ombot..."
@@ -190,6 +201,7 @@ else
   echo "ombist-provision: skipping OmbRouter (OMBIST_INSTALL_OMBROUTER=0)."
 fi
 
+if [[ "${OMBIST_AGENT_RUNTIME}" != "hermes" ]]; then
 # Optional: seed OpenClaw agent workspace (*.md) from env OPENCLAW_WS_*_B64
 OPENCLAW_WORKSPACE_DIR="${OMBOT_HOME}/.openclaw/workspace"
 SEED_OPENCLAW_WORKSPACE=0
@@ -319,6 +331,7 @@ as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
 as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombist-gateway-agent.json" 2>/dev/null || true
+fi
 
 {
   echo "PORT=${OMBOT_PORT}"
@@ -334,10 +347,15 @@ as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombis
   echo "OPENCLAW_SELF_HEAL_INTERVAL_MS=180000"
   echo "OPENCLAW_GATEWAY_WATCH_INTERVAL_MS=60000"
   echo "OPENCLAW_GATEWAY_CONNECT_WAIT_MS=45000"
-  echo "OPENCLAW_READYZ_REQUIRE_GATEWAY=1"
-  echo 'OPENCLAW_BRIDGE_OPERATOR_SCOPES=["operator.read","operator.write","operator.admin"]'
-  echo "OPENCLAW_BRIDGE_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
-  echo "OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
+  if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+    echo "OMBIST_AGENT_RUNTIME=hermes"
+  else
+    echo "OMBIST_AGENT_RUNTIME=openclaw"
+    echo "OPENCLAW_READYZ_REQUIRE_GATEWAY=1"
+    echo 'OPENCLAW_BRIDGE_OPERATOR_SCOPES=["operator.read","operator.write","operator.admin"]'
+    echo "OPENCLAW_BRIDGE_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
+    echo "OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
+  fi
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
   fi
@@ -358,8 +376,69 @@ as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombis
     echo "OMBERS_AUTH_TOKEN=${MIDDLEWARE_AUTH_TOKEN}"
   fi
 } | as_root tee "${OMBOT_ENV_PATH}" >/dev/null
+if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+  HERMES_BRIDGE_CONVERSATION_ID="${HERMES_BRIDGE_CONVERSATION_ID:-default}"
+  HERMES_BRIDGE_PARTICIPANT_ID="${HERMES_BRIDGE_PARTICIPANT_ID:-default}"
+  ombist_append_ombot_env_hermes_bridge
+fi
 as_root chown root:"${OMBOT_GROUP}" "${OMBOT_ENV_PATH}"
 as_root chmod 640 "${OMBOT_ENV_PATH}"
+
+if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+  ombist_write_hermes_gateway_systemd
+  WRAPPER_OMBOT="${OMBOT_BIN_DIR}/run-ombot.sh"
+  as_root tee "${WRAPPER_OMBOT}" >/dev/null <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+export NVM_DIR="${OMBOT_HOME}/.nvm"
+source "\${NVM_DIR}/nvm.sh"
+nvm use 22 >/dev/null
+set -a
+source "${OMBOT_ENV_PATH}"
+set +a
+cd "${OMBOT_REPO_DIR}"
+exec node index.js
+EOF
+  as_root chown root:"${OMBOT_GROUP}" "${WRAPPER_OMBOT}"
+  as_root chmod 750 "${WRAPPER_OMBOT}"
+
+  echo "ombist-provision: writing systemd services (Hermes + Ombot)..."
+  as_root tee "${OMBOT_SERVICE_PATH}" >/dev/null <<EOF
+[Unit]
+Description=Ombot relay (Ombist strict, Hermes bridge)
+Requires=ombist-hermes-gateway.service
+After=network-online.target ombist-hermes-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${OMBOT_USER}
+Group=${OMBOT_GROUP}
+EnvironmentFile=${OMBOT_ENV_PATH}
+ExecStart=${WRAPPER_OMBOT}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=${OMBOT_DATA_DIR} ${OMBOT_REPO_DIR} ${HERMES_HOME}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  as_root systemctl daemon-reload
+  as_root systemctl enable ombist-hermes-gateway.service ombist-ombot.service
+  as_root systemctl restart ombist-hermes-gateway.service
+  ombist_wait_hermes_api || exit 32
+  as_root systemctl restart ombist-ombot.service
+  require_active_service "ombist-hermes-gateway.service"
+  require_active_service "ombist-ombot.service"
+  ombist_hermes_firewall_guard
+  ombist_provision_summary_hermes
+  exit 0
+fi
 
 WRAPPER_GW="${OMBOT_BIN_DIR}/run-openclaw-gateway.sh"
 as_root tee "${WRAPPER_GW}" >/dev/null <<EOF
@@ -501,6 +580,7 @@ else
 fi
 
 echo "PROVISION_SUMMARY_BEGIN"
+echo "agent_runtime=openclaw"
 echo "gateway_port=${OPENCLAW_GATEWAY_PORT}"
 echo "gateway_bind_ok=${BIND_OK}"
 echo "gateway_state=${GW_STATE}"

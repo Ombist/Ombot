@@ -24,6 +24,10 @@ fi
 : "${OMBIST_WSS_PORT:?OMBIST_WSS_PORT is required}"
 : "${OPENCLAW_MACHINE_SEED:?OPENCLAW_MACHINE_SEED is required}"
 
+OMBIST_AGENT_RUNTIME="${OMBIST_AGENT_RUNTIME:-openclaw}"
+# shellcheck source=provision-hermes-lib.sh
+source "${_OMBIST_PROVISION_DIR}/provision-hermes-lib.sh"
+
 OMBOT_PORT="${OMBOT_PORT:-8082}"
 OMBOT_HEALTH_PORT="${OMBOT_HEALTH_PORT:-9090}"
 OMBOT_GIT_URL="${OMBOT_GIT_URL:-https://github.com/Ombist/Ombot.git}"
@@ -266,8 +270,13 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 14
 fi
 
-echo "ombist-provision-single-bot: installing openclaw..."
 run_as_ombot "mkdir -p '${NPM_PREFIX}'"
+if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+  echo "ombist-provision-single-bot: agent runtime=hermes (skipping OpenClaw npm install)"
+  ombist_install_hermes_cli || exit 30
+  ombist_write_hermes_env_file || exit 31
+else
+echo "ombist-provision-single-bot: installing openclaw..."
 run_as_ombot "export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 npm install -g openclaw@latest"
@@ -282,6 +291,7 @@ if [[ -z "${OPENCLAW_GATEWAY_TOKEN}" ]]; then
     exit 1
   fi
   echo "ombist-provision-single-bot: generated gateway token for local auth."
+fi
 fi
 
 echo "ombist-provision-single-bot: updating Ombot dependencies (repo already cloned)..."
@@ -303,6 +313,7 @@ else
   echo "ombist-provision-single-bot: skipping OmbRouter (OMBIST_INSTALL_OMBROUTER=0)."
 fi
 
+if [[ "${OMBIST_AGENT_RUNTIME}" != "hermes" ]]; then
 echo "ombist-provision-single-bot: OpenClaw fragments + compose..."
 as_root mkdir -p "${OPENCLAW_FRAGMENTS_DIR}"
 as_root tee "${OPENCLAW_FRAGMENTS_DIR}/10-gateway-transport.json" >/dev/null <<EOF
@@ -361,27 +372,35 @@ as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_CONFIG_PATH}"
 as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombist-gateway-agent.json" 2>/dev/null || true
+fi
 
 {
   echo "PORT=${OMBOT_PORT}"
   echo "HEALTH_PORT=${OMBOT_HEALTH_PORT}"
   echo "OPENCLAW_WS_LISTEN_HOST=127.0.0.1"
   echo "OPENCLAW_SINGLE_CLIENT_MODE=1"
-  echo "OPENCLAW_SELF_HEAL=1"
-  echo "OPENCLAW_SELF_HEAL_INTERVAL_MS=180000"
-  echo "OPENCLAW_GATEWAY_WATCH_INTERVAL_MS=60000"
-  echo "OPENCLAW_GATEWAY_CONNECT_WAIT_MS=45000"
-  echo "OPENCLAW_READYZ_REQUIRE_GATEWAY=1"
+  echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
   echo "MIDDLEWARE_WS_URL=wss://127.0.0.1:9/ws"
   echo "OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0"
-  echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
-  echo "OPENCLAW_FRAGMENTS_DIR=${OPENCLAW_FRAGMENTS_DIR}"
-  echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
-  echo "OPENCLAW_RUNTIME_CONFIG_PATH=${OPENCLAW_RUNTIME_CONFIG_PATH}"
-  echo "OPENCLAW_CONFIG_PATH=${OPENCLAW_CONFIG_PATH}"
-  echo 'OPENCLAW_BRIDGE_OPERATOR_SCOPES=["operator.read","operator.write","operator.admin"]'
-  echo "OPENCLAW_BRIDGE_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
-  echo "OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
+  if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+    echo "OMBIST_AGENT_RUNTIME=hermes"
+    echo "OPENCLAW_SELF_HEAL=0"
+    echo "OPENCLAW_READYZ_REQUIRE_GATEWAY=0"
+  else
+    echo "OMBIST_AGENT_RUNTIME=openclaw"
+    echo "OPENCLAW_SELF_HEAL=1"
+    echo "OPENCLAW_SELF_HEAL_INTERVAL_MS=180000"
+    echo "OPENCLAW_GATEWAY_WATCH_INTERVAL_MS=60000"
+    echo "OPENCLAW_GATEWAY_CONNECT_WAIT_MS=45000"
+    echo "OPENCLAW_READYZ_REQUIRE_GATEWAY=1"
+    echo "OPENCLAW_FRAGMENTS_DIR=${OPENCLAW_FRAGMENTS_DIR}"
+    echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
+    echo "OPENCLAW_RUNTIME_CONFIG_PATH=${OPENCLAW_RUNTIME_CONFIG_PATH}"
+    echo "OPENCLAW_CONFIG_PATH=${OPENCLAW_CONFIG_PATH}"
+    echo 'OPENCLAW_BRIDGE_OPERATOR_SCOPES=["operator.read","operator.write","operator.admin"]'
+    echo "OPENCLAW_BRIDGE_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
+    echo "OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
+  fi
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     echo "OPENAI_API_KEY=${OPENAI_API_KEY}"
   fi
@@ -398,9 +417,56 @@ as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombis
     echo "OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}"
   fi
 } | as_root tee "${OMBOT_ENV_PATH}" >/dev/null
+if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+  HERMES_BRIDGE_CONVERSATION_ID="${HERMES_BRIDGE_CONVERSATION_ID:-default}"
+  HERMES_BRIDGE_PARTICIPANT_ID="${HERMES_BRIDGE_PARTICIPANT_ID:-default}"
+  ombist_append_ombot_env_hermes_bridge
+fi
 as_root chown root:"${OMBOT_GROUP}" "${OMBOT_ENV_PATH}"
 as_root chmod 640 "${OMBOT_ENV_PATH}"
 
+if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+  ombist_write_hermes_gateway_systemd
+  WRAPPER_OMBOT="${OMBOT_BIN_DIR}/run-ombot.sh"
+  as_root tee "${WRAPPER_OMBOT}" >/dev/null <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source "${OMBOT_ENV_PATH}"
+set +a
+cd "${OMBOT_REPO_DIR}"
+exec node index.js
+EOF
+  as_root chown root:"${OMBOT_GROUP}" "${WRAPPER_OMBOT}"
+  as_root chmod 750 "${WRAPPER_OMBOT}"
+
+  as_root tee "${OMBOT_SERVICE_PATH}" >/dev/null <<EOF
+[Unit]
+Description=Ombot single-client (Ombist, Hermes bridge)
+Requires=ombist-hermes-gateway.service
+After=network-online.target ombist-hermes-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${OMBOT_USER}
+Group=${OMBOT_GROUP}
+EnvironmentFile=${OMBOT_ENV_PATH}
+ExecStart=${WRAPPER_OMBOT}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=${OMBOT_DATA_DIR} ${OMBOT_REPO_DIR} ${HERMES_HOME}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+fi
+
+if [[ "${OMBIST_AGENT_RUNTIME}" != "hermes" ]]; then
 WRAPPER_GW="${OMBOT_BIN_DIR}/run-openclaw-gateway.sh"
 as_root tee "${WRAPPER_GW}" >/dev/null <<EOF
 #!/usr/bin/env bash
@@ -482,6 +548,7 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
+fi
 
 echo "ombist-provision-single-bot: Nginx..."
 if ! command -v nginx >/dev/null 2>&1; then
@@ -533,9 +600,21 @@ fi
 as_root systemctl enable nginx.service
 as_root systemctl restart nginx.service
 
+as_root systemctl daemon-reload
+if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+  echo "ombist-provision-single-bot: systemd restart (Hermes gateway then ombot)..."
+  as_root systemctl enable ombist-hermes-gateway.service ombist-ombot.service
+  as_root systemctl restart ombist-hermes-gateway.service
+  ombist_wait_hermes_api || exit 32
+  as_root systemctl restart ombist-ombot.service
+  require_active_service "ombist-hermes-gateway.service"
+  require_active_service "ombist-ombot.service"
+  require_active_service "nginx.service"
+  ombist_hermes_firewall_guard
+  FW_MODE="${FW_MODE:-hermes_loopback}"
+else
 echo "ombist-provision-single-bot: systemd restart (gateway then ombot)..."
 assert_openclaw_gateway_mode_local "${OPENCLAW_CONFIG_PATH}"
-as_root systemctl daemon-reload
 as_root systemctl enable ombist-openclaw-gateway.service ombist-ombot.service
 as_root systemctl restart ombist-openclaw-gateway.service
 sleep 2
@@ -562,6 +641,41 @@ elif command -v nft >/dev/null 2>&1; then
 else
   FW_WARNING="${FW_WARNING:+$FW_WARNING; }firewall_tool_missing"
 fi
+fi
+
+if [[ "${OMBIST_AGENT_RUNTIME}" == "hermes" ]]; then
+  HM_STATE="$(as_root systemctl is-active ombist-hermes-gateway.service || true)"
+  OMBOT_STATE="$(as_root systemctl is-active ombist-ombot.service || true)"
+  NGINX_STATE="$(command -v nginx >/dev/null && as_root systemctl is-active nginx.service 2>/dev/null || echo unknown)"
+  API_OK="false"
+  if run_as_ombot "curl -fsS -o /dev/null -H 'Authorization: Bearer ${HERMES_API_SERVER_KEY}' 'http://${HERMES_API_HOST}:${HERMES_API_PORT}/v1/health'" 2>/dev/null \
+    || run_as_ombot "curl -fsS -o /dev/null -H 'Authorization: Bearer ${HERMES_API_SERVER_KEY}' 'http://${HERMES_API_HOST}:${HERMES_API_PORT}/v1/models'" 2>/dev/null; then
+    API_OK="true"
+  fi
+  ROOTCA_B64="$(as_root base64 -w0 "${TLS_DIR}/RootCA.crt" 2>/dev/null || as_root base64 "${TLS_DIR}/RootCA.crt" | tr -d '\n')"
+  echo "PROVISION_SUMMARY_BEGIN"
+  echo "mode=single_bot"
+  echo "agent_runtime=hermes"
+  echo "tls_public_host=${PUBHOST}"
+  echo "wss_port=${OMBIST_WSS_PORT}"
+  echo "ombot_loopback_port=${OMBOT_PORT}"
+  echo "hermes_api_port=${HERMES_API_PORT}"
+  echo "hermes_api_ok=${API_OK}"
+  echo "hermes_gateway_active=${HM_STATE}"
+  echo "hermes_gateway_state=${HM_STATE}"
+  echo "ombot_state=${OMBOT_STATE}"
+  echo "nginx_state=${NGINX_STATE}"
+  echo "log_file=${LOG_FILE}"
+  echo "firewall_mode=${FW_MODE}"
+  if [[ -n "${FW_WARNING}" ]]; then
+    echo "warning=${FW_WARNING}"
+  fi
+  echo "PROVISION_SUMMARY_END"
+  echo "ROOTCA_PEM_B64_BEGIN"
+  echo "${ROOTCA_B64}"
+  echo "ROOTCA_PEM_B64_END"
+  exit 0
+fi
 
 GW_STATE="$(as_root systemctl is-active ombist-openclaw-gateway.service || true)"
 OMBOT_STATE="$(as_root systemctl is-active ombist-ombot.service || true)"
@@ -571,6 +685,7 @@ ROOTCA_B64="$(as_root base64 -w0 "${TLS_DIR}/RootCA.crt" 2>/dev/null || as_root 
 
 echo "PROVISION_SUMMARY_BEGIN"
 echo "mode=single_bot"
+echo "agent_runtime=openclaw"
 echo "tls_public_host=${PUBHOST}"
 echo "wss_port=${OMBIST_WSS_PORT}"
 echo "ombot_loopback_port=${OMBOT_PORT}"
