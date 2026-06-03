@@ -62,6 +62,7 @@ If preflight reports `HAS_NODE=1` but a command still returns `NO_NODE`, update 
 | `ombot-admin gateway health-gates --json` | Evaluate Pairing / Scope / Provider gates from recent Ombot + Gateway logs (default window `10 min ago`) |
 | `ombot-admin gateway config-drift --json` | Compare `OPENCLAW_GATEWAY_TOKEN` and `OPENCLAW_BRIDGE_OPERATOR_SCOPES` across env/runtime/systemd sources; when **`OPENCLAW_FRAGMENTS_DIR`** is present, also merges **`ombist-openclaw-drift.mjs`** output (per-fragment SHA256, composed vs runtime hash, optional bridge agent id vs `agents.list`, optional **`llm_secret_env_and_auth_profiles_overlap`** warning). Drift codes may include `composed_runtime_vs_fragments_mismatch`, `bridge_agent_id_vs_agents_list`, `llm_secret_env_and_auth_profiles_overlap`. |
 | `ombot-admin gateway loopback --json` | TCP probe of `OPENCLAW_GATEWAY_URL` (default `127.0.0.1:18789`), plus gateway systemd unit active state |
+| `ombot-admin bot ensure-ready [--skip-route] --json` | **Golden path:** refresh `ombot-admin`, `openclaw config repair-route` (unless `--skip-route`), restart `ombist-openclaw-gateway` + `ombist-ombot`, wait for loopback gateway, verify `GET /readyz`. Optional config-drift warnings. Prefer this over ad-hoc repair + probe. |
 
 ### TLS version fingerprint (`rootCaSha256Hex`)
 
@@ -76,6 +77,8 @@ Ombist_IOS calls the above via SSH + a small bash stub (`OmbotAdminCli`). If `om
 After changing `systemctl monitor` behavior, machines must run an **`ombot-admin` copy that includes the update** (redeploy from a current Ombot checkout, or copy updated files under `/opt/ombot/bin/ombot-admin-lib/`) so **「檢查遠端服務」** reports `ombist-*` units instead of legacy names on iOS-provisioned hosts.
 
 ## Gateway stability workflow
+
+When BOT is degraded after provision or route apply, run **`ombot-admin bot ensure-ready --json`** first.
 
 When `NOT_PAIRED`, `missing scope: operator.write`, and provider 401 appear in mixed waves, run:
 

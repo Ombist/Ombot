@@ -13,6 +13,18 @@ function sha256Hex(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
+function isHttpUrl(s) {
+  const t = String(s || '').trim();
+  if (!t) return false;
+  const lower = t.toLowerCase();
+  if (!lower.startsWith('http://') && !lower.startsWith('https://')) return false;
+  try {
+    return Boolean(new URL(t).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function listFragmentFiles(dir) {
   if (!fs.existsSync(dir)) return [];
   return fs
@@ -32,6 +44,7 @@ const out = {
   composedMatchesRuntime: null,
   bridgeAgentIdMatch: null,
   llmSecretDuplicationWarning: false,
+  authProfileKeyIsUrl: false,
 };
 
 try {
@@ -86,7 +99,7 @@ try {
 }
 
 const openaiEnv = Boolean(readEnv(envRaw || '', 'OPENAI_API_KEY'));
-if (openaiEnv && ombotHome) {
+if (ombotHome) {
   const authBase = path.join(ombotHome, '.openclaw/agents');
   try {
     if (fs.existsSync(authBase)) {
@@ -97,14 +110,17 @@ if (openaiEnv && ombotHome) {
         const store = JSON.parse(fs.readFileSync(p, 'utf8'));
         const profs = store?.profiles;
         if (profs && typeof profs === 'object') {
-          for (const k of Object.keys(profs)) {
-            if (String(k).toLowerCase().startsWith('openai')) {
+          for (const [profileId, prof] of Object.entries(profs)) {
+            if (openaiEnv && String(profileId).toLowerCase().startsWith('openai')) {
               out.llmSecretDuplicationWarning = true;
-              break;
+            }
+            const keyVal = prof && typeof prof === 'object' ? prof.key : '';
+            if (isHttpUrl(keyVal)) {
+              out.authProfileKeyIsUrl = true;
             }
           }
         }
-        if (out.llmSecretDuplicationWarning) break;
+        if (out.authProfileKeyIsUrl && (!openaiEnv || out.llmSecretDuplicationWarning)) break;
       }
     }
   } catch {

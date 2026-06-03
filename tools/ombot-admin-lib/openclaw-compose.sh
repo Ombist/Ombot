@@ -51,7 +51,7 @@ ombist_cmd_openclaw_compose_main() {
   set +e
   out_json="$(ombist_as_root env \
     OPENCLAW_FRAGMENTS_DIR="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}" \
-    OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH:-/home/ombot/.openclaw/openclaw.json}" \
+    OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH:-/var/lib/ombot/openclaw.json}" \
     OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}" \
     OPENCLAW_COMPOSE_USE_FLOCK="${OPENCLAW_COMPOSE_USE_FLOCK:-1}" \
     "${node_bin}" "${ombot_tools_dir}/openclaw-compose.mjs" "${args[@]}" 2>"${err_file}")"

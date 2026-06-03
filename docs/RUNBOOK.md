@@ -37,6 +37,7 @@
 
 ### Commands
 
+- **`ombot-admin bot ensure-ready --json`** — preferred recovery (tools install, repair-route, restart units, gateway + `/readyz`)
 - `ombot-admin gateway health-gates --json`
 - `ombot-admin gateway config-drift --json`
 - `tools/gateway-stability-runbook.sh diagnose`

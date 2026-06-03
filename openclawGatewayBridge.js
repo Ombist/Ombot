@@ -27,6 +27,12 @@ import {
 } from './openclawConfigSelfHeal.js';
 import { ProviderFallbackClient } from './providerFallbackClient.js';
 import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
+import {
+  extractAssistantTextFromGateway,
+  isGatewayAcceptedAck,
+} from './gatewayResponseText.js';
+
+export { extractAssistantTextFromGateway, isGatewayAcceptedAck };
 
 function makeReqId() {
   return `ombot-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -163,27 +169,6 @@ export function assistantTextToPhoneRes(text) {
   });
 }
 
-/**
- * Parse assistant text from Gateway res/event (best-effort for OpenClaw versions).
- * @param {object} msg
- */
-export function extractAssistantTextFromGateway(msg) {
-  if (!msg || typeof msg !== 'object') return null;
-  if (msg.type === 'res' && msg.ok === false) {
-    const err = msg.error && typeof msg.error === 'object' ? msg.error.message || msg.error.code : msg.error;
-    return err != null ? `[error] ${String(err)}` : '[error]';
-  }
-  const p = msg.payload;
-  if (p && typeof p === 'object') {
-    if (p.text != null) return String(p.text);
-    if (p.message != null) return String(p.message);
-    if (p.content != null) return String(p.content);
-  }
-  if (typeof p === 'string') return p;
-  if (msg.text != null) return String(msg.text);
-  return null;
-}
-
 export class OpenClawGatewayBridge {
   /**
    * @param {{ keyPair: object, config: object, agentId: string, conversationId: string, participantId: string, clientId?: string }} opts
@@ -227,6 +212,9 @@ export class OpenClawGatewayBridge {
     this._connectNonce = null;
     this._connectSent = false;
     this._connectChallengeTimer = null;
+    this._gatewayPingTimer = null;
+    this._gatewayPongTimeout = null;
+    this._lastGatewayPongAt = null;
     this._gatewayIdentity = null;
     this._initGateStatus();
   }
@@ -432,6 +420,7 @@ export class OpenClawGatewayBridge {
     this._setGate('pairing', 'pass', 'connect_ok');
     this._setGate('scope', 'pass', 'connect_ok');
     logger.info('gateway_bridge_connected');
+    this._startGatewayKeepalive();
     this._drainQueue();
   }
 
@@ -567,6 +556,8 @@ export class OpenClawGatewayBridge {
           clientId: this.clientId,
         });
       },
+      getBridgeConnected: () =>
+        Boolean(this._gatewayConnected && this.gatewayWs && this.gatewayWs.readyState === 1),
     });
     this.session.startBridgeSession({
       agentId: this.agentId,
@@ -579,6 +570,7 @@ export class OpenClawGatewayBridge {
   stop() {
     this._destroyed = true;
     this._clearConnectChallengeTimer();
+    this._stopGatewayKeepalive();
     this._connectNonce = null;
     this._connectSent = false;
     if (this._reconnectTimer) {
@@ -654,6 +646,7 @@ export class OpenClawGatewayBridge {
     this.gatewayWs.on('close', () => {
       this._connecting = false;
       this._gatewayConnected = false;
+      this._stopGatewayKeepalive();
       this._clearConnectChallengeTimer();
       this._connectNonce = null;
       this._connectSent = false;
@@ -731,10 +724,69 @@ export class OpenClawGatewayBridge {
     } catch {
       return;
     }
+    if (j.type === 'ping') {
+      this.session?.handleApplicationPing(
+        j,
+        Boolean(this._gatewayConnected && this.gatewayWs && this.gatewayWs.readyState === 1)
+      );
+      return;
+    }
     const userText = phonePayloadToUserText(j);
     if (userText == null) return;
     gatewayBridgePhoneToGatewayTotal.inc();
     this._enqueueUserMessage(userText);
+  }
+
+  _stopGatewayKeepalive() {
+    if (this._gatewayPingTimer) {
+      clearInterval(this._gatewayPingTimer);
+      this._gatewayPingTimer = null;
+    }
+    if (this._gatewayPongTimeout) {
+      clearTimeout(this._gatewayPongTimeout);
+      this._gatewayPongTimeout = null;
+    }
+  }
+
+  _startGatewayKeepalive() {
+    this._stopGatewayKeepalive();
+    const PING_MS = 30_000;
+    const PONG_TIMEOUT_MS = 10_000;
+    if (!this.gatewayWs) return;
+    this._lastGatewayPongAt = Date.now();
+    this.gatewayWs.on('pong', () => {
+      this._lastGatewayPongAt = Date.now();
+      if (this._gatewayPongTimeout) {
+        clearTimeout(this._gatewayPongTimeout);
+        this._gatewayPongTimeout = null;
+      }
+    });
+    this._gatewayPingTimer = setInterval(() => {
+      if (!this.gatewayWs || this.gatewayWs.readyState !== 1) return;
+      try {
+        this.gatewayWs.ping();
+      } catch {
+        try {
+          this.gatewayWs.terminate();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      if (this._gatewayPongTimeout) clearTimeout(this._gatewayPongTimeout);
+      this._gatewayPongTimeout = setTimeout(() => {
+        const stale = Date.now() - (this._lastGatewayPongAt || 0);
+        if (stale > PONG_TIMEOUT_MS) {
+          try {
+            this.gatewayWs?.terminate();
+          } catch {
+            /* ignore */
+          }
+        }
+      }, PONG_TIMEOUT_MS);
+      this._gatewayPongTimeout.unref?.();
+    }, PING_MS);
+    this._gatewayPingTimer.unref?.();
   }
 
   _enqueueUserMessage(text) {
@@ -850,6 +902,15 @@ let activeBridge = null;
 export function shouldStartGatewayBridge() {
   const v = (process.env.OPENCLAW_GATEWAY_BRIDGE || '').trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes';
+}
+
+export function getGatewayBridgeConnected() {
+  if (!activeBridge) return false;
+  return Boolean(
+    activeBridge._gatewayConnected &&
+      activeBridge.gatewayWs &&
+      activeBridge.gatewayWs.readyState === 1
+  );
 }
 
 /**

@@ -8,6 +8,15 @@
 
 set -euo pipefail
 
+_OMBIST_PROVISION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -n "${OMBIST_PROVISION_LIB_PATH:-}" ]] && [[ -s "${OMBIST_PROVISION_LIB_PATH}" ]]; then
+  # shellcheck source=/dev/null
+  source "${OMBIST_PROVISION_LIB_PATH}"
+elif [[ -s "${_OMBIST_PROVISION_DIR}/provision-lib-common.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${_OMBIST_PROVISION_DIR}/provision-lib-common.sh"
+fi
+
 : "${RELAY_HOST:?RELAY_HOST is required}"
 : "${MACHINE_PORT:?MACHINE_PORT is required}"
 : "${OPENCLAW_MACHINE_SEED:?OPENCLAW_MACHINE_SEED is required}"
@@ -35,7 +44,7 @@ NPM_PREFIX="${INSTALL_ROOT}/npm-global"
 
 OMBOT_ENV_PATH="${OMBOT_ENV_PATH:-/etc/ombot/ombot.env}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
-OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH:-${OMBOT_HOME}/.openclaw/openclaw.json}"
+OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH:-${OMBOT_DATA_DIR}/openclaw.json}"
 OPENCLAW_FRAGMENTS_DIR="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}"
 GW_SERVICE_PATH="/etc/systemd/system/ombist-openclaw-gateway.service"
 OMBOT_SERVICE_PATH="/etc/systemd/system/ombist-ombot.service"
@@ -124,11 +133,21 @@ as_root chmod 750 "${INSTALL_ROOT}" "${OMBOT_DATA_DIR}"
 
 echo "ombist-provision: installing nvm/node/openclaw for ${OMBOT_USER}..."
 run_as_ombot "mkdir -p '${NPM_PREFIX}'"
-run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; \
+OMBIST_PROVISION_LABEL="ombist-provision"
+if declare -F ombist_install_node22_via_nvm_for_ombot >/dev/null 2>&1; then
+  ombist_install_node22_via_nvm_for_ombot || {
+    echo "ombist-provision: nvm node 22 install failed" >&2
+    exit 14
+  }
+else
+  run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; \
 if [[ ! -s \"\${NVM_DIR}/nvm.sh\" ]]; then curl -fsSL 'https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh' | bash; fi; \
 source \"\${NVM_DIR}/nvm.sh\"; \
 if ! nvm use 22 >/dev/null 2>&1; then nvm install 22 >/dev/null; nvm alias default 22 >/dev/null; fi; \
-nvm use 22 >/dev/null; \
+nvm use 22 >/dev/null"
+fi
+ombist_ensure_node22
+run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; \
 export NPM_CONFIG_PREFIX='${NPM_PREFIX}'; \
 export PATH=\"\${NPM_CONFIG_PREFIX}/bin:\${PATH}\"; \
 npm install -g openclaw@latest"
@@ -277,7 +296,8 @@ as_root env \
   OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}" \
   OPENCLAW_COMPOSE_USE_FLOCK=0 \
   "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/openclaw-compose.mjs" || {
-  echo "ombist-provision: warning: openclaw-compose failed (gateway may stay on status=78/CONFIG)" >&2
+  echo "ombist-provision: openclaw-compose failed (gateway will not start)" >&2
+  exit 28
 }
 
 OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID:-default}"
@@ -290,7 +310,10 @@ as_root env \
   OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH}" \
   OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}" \
   OPENCLAW_COMPOSE_USE_FLOCK=0 \
-  "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs"
+  "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs" || {
+  echo "ombist-provision: ensure-openclaw-gateway-agent failed" >&2
+  exit 29
+}
 as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
@@ -304,6 +327,8 @@ as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombis
   echo "OPENCLAW_FRAGMENTS_DIR=${OPENCLAW_FRAGMENTS_DIR}"
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
   echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
+  echo "OPENCLAW_RUNTIME_CONFIG_PATH=${OPENCLAW_RUNTIME_CONFIG_PATH}"
+  echo "OPENCLAW_CONFIG_PATH=${OPENCLAW_CONFIG_PATH}"
   echo "OPENCLAW_REQUIRE_MIDDLEWARE_TLS=${OPENCLAW_REQUIRE_MIDDLEWARE_TLS}"
   echo "OPENCLAW_SELF_HEAL=1"
   echo "OPENCLAW_SELF_HEAL_INTERVAL_MS=180000"

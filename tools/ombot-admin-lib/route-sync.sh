@@ -5,7 +5,7 @@
 
 ombist_cmd_route_sync_main() {
   local cfg="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
-  local runtime_cfg="${OPENCLAW_RUNTIME_CONFIG_PATH:-/home/ombot/.openclaw/openclaw.json}"
+  local runtime_cfg="${OPENCLAW_RUNTIME_CONFIG_PATH:-/var/lib/ombot/openclaw.json}"
   local ombot_tools_dir="${OMBOT_TOOLS_DIR:-}"
   if [[ -z "${ombot_tools_dir}" ]] && [[ -n "${LIB:-}" ]]; then
     if ombot_tools_dir="$(cd "${LIB}/../../Ombot/tools" 2>/dev/null && pwd)" && [[ -f "${ombot_tools_dir}/openclaw-merge-patch.mjs" ]]; then
@@ -292,6 +292,30 @@ const payloadPath = process.env.OMB_AUTH_PAYLOAD;
 const payload = JSON.parse(fs.readFileSync(payloadPath, 'utf8'));
 const suffix = String(payload.profileIdSuffix || 'default');
 const agents = payload.agents && typeof payload.agents === 'object' ? payload.agents : {};
+function isHttpUrl(s) {
+  const t = String(s || '').trim();
+  if (!t) return false;
+  const lower = t.toLowerCase();
+  if (!lower.startsWith('http://') && !lower.startsWith('https://')) return false;
+  try {
+    return Boolean(new URL(t).hostname);
+  } catch (e) {
+    return false;
+  }
+}
+const rejectedUrlKeys = [];
+for (const [agentId, providerKeys] of Object.entries(agents)) {
+  if (!providerKeys || typeof providerKeys !== 'object') continue;
+  for (const [prov, key] of Object.entries(providerKeys)) {
+    if (typeof key === 'string' && isHttpUrl(key)) {
+      rejectedUrlKeys.push(String(agentId) + '/' + String(prov || '').trim());
+    }
+  }
+}
+if (rejectedUrlKeys.length > 0) {
+  console.error('AUTH_KEY_IS_URL:' + rejectedUrlKeys.join(','));
+  process.exit(3);
+}
 function mergeAuthForAgent(agentId, providerKeys) {
   if (!agentId || typeof providerKeys !== 'object' || !providerKeys) return;
   const base = home + '/.openclaw/agents/' + agentId + '/agent';
@@ -308,9 +332,10 @@ function mergeAuthForAgent(agentId, providerKeys) {
   for (const [prov, key] of Object.entries(providerKeys)) {
     if (!prov || typeof prov !== 'string') continue;
     if (typeof key !== 'string' || !String(key).trim()) continue;
+    const trimmedKey = String(key).trim();
     const provider = String(prov).trim();
     const profileKey = provider + ':' + suffix;
-    store.profiles[profileKey] = { type: 'api_key', provider, key: String(key).trim() };
+    store.profiles[profileKey] = { type: 'api_key', provider, key: trimmedKey };
   }
   fs.writeFileSync(authPath, JSON.stringify(store, null, 2) + '\n');
 }
@@ -319,22 +344,26 @@ for (const [agentId, providerKeys] of Object.entries(agents)) {
 }
 NODE
 
+    local auth_rc=0
+    local auth_out=""
     if command -v sudo >/dev/null 2>&1 && sudo -n -u ombot true >/dev/null 2>&1; then
-      if ! sudo -n -u ombot env HOME="${ombot_home}" OMBOT_HOME="${ombot_home}" OMB_AUTH_PAYLOAD="${auth_path}" PATH="${PATH}" "${node_bin}" "${auth_js}" >/dev/null 2>&1; then
-        ombist_emit_envelope false "route_sync" "auth profile merge failed." "{}" "[]" '[{"code":"AUTH_SYNC_FAILED","message":"failed to merge auth profiles"}]'
-        return 0
-      fi
+      auth_out="$(sudo -n -u ombot env HOME="${ombot_home}" OMBOT_HOME="${ombot_home}" OMB_AUTH_PAYLOAD="${auth_path}" PATH="${PATH}" "${node_bin}" "${auth_js}" 2>&1)" || auth_rc=$?
     elif [[ "$(id -u)" -eq 0 ]]; then
-      if ! HOME="${ombot_home}" OMBOT_HOME="${ombot_home}" OMB_AUTH_PAYLOAD="${auth_path}" "${node_bin}" "${auth_js}" >/dev/null 2>&1; then
-        ombist_emit_envelope false "route_sync" "auth profile merge failed." "{}" "[]" '[{"code":"AUTH_SYNC_FAILED","message":"failed to merge auth profiles"}]'
-        return 0
-      fi
+      auth_out="$(HOME="${ombot_home}" OMBOT_HOME="${ombot_home}" OMB_AUTH_PAYLOAD="${auth_path}" "${node_bin}" "${auth_js}" 2>&1)" || auth_rc=$?
       # Root fallback can create root-owned agent directories; restore ownership for runtime writes.
       ombist_as_root chown -R "ombot:${ombot_group}" "${ombot_home}/.openclaw/agents" >/dev/null 2>&1 || true
     else
       local err_no_sudo
       err_no_sudo="$(printf '[{"code":"NO_SUDO","message":%s}]' "$(ombist_json_escape_string "sudo -n -u ombot required for auth profile sync")")"
       ombist_emit_envelope false "route_sync" "need root or passwordless sudo." "{}" "[]" "${err_no_sudo}"
+      return 0
+    fi
+    if [[ "${auth_rc}" -eq 3 ]] || [[ "${auth_out}" == *AUTH_KEY_IS_URL:* ]]; then
+      ombist_emit_envelope false "route_sync" "auth profile key looks like URL." "{}" "[]" '[{"code":"AUTH_KEY_IS_URL","message":"auth-profiles key must be API secret, not base URL; put endpoint in API base URL field"}]'
+      return 0
+    fi
+    if [[ "${auth_rc}" -ne 0 ]]; then
+      ombist_emit_envelope false "route_sync" "auth profile merge failed." "{}" "[]" '[{"code":"AUTH_SYNC_FAILED","message":"failed to merge auth profiles"}]'
       return 0
     fi
   fi

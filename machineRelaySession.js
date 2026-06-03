@@ -57,6 +57,7 @@ export class MachineRelaySession {
    * @param {boolean} [opts.bridgeMode]
    * @param {(plainUtf8: string) => void} [opts.onDecryptedPlaintextToConsumer]
    * @param {() => void} [opts.onMiddlewareDisconnected]
+   * @param {() => boolean} [opts.getBridgeConnected]
    */
   constructor(opts) {
     this.clientId = opts.clientId;
@@ -66,6 +67,7 @@ export class MachineRelaySession {
     this.bridgeMode = Boolean(opts.bridgeMode);
     this.onDecryptedPlaintextToConsumer = opts.onDecryptedPlaintextToConsumer || null;
     this.onMiddlewareDisconnected = opts.onMiddlewareDisconnected || null;
+    this.getBridgeConnected = opts.getBridgeConnected || (() => false);
 
     this.middlewareWs = null;
     this.chatroomBoxKeys = null;
@@ -81,6 +83,9 @@ export class MachineRelaySession {
     this.seenNonces = new Map();
     this._reconnectTimer = null;
     this._destroyed = false;
+    this._middlewarePingTimer = null;
+    this._middlewarePongTimeout = null;
+    this._lastMiddlewarePongAt = null;
     /** @type {GatewayAgentClient | null} */
     this._gatewayClient = null;
     /** @type {string | null} */
@@ -104,6 +109,7 @@ export class MachineRelaySession {
 
   destroy() {
     this._destroyed = true;
+    this._stopMiddlewareKeepalive();
     if (this._gatewayClient) {
       this._gatewayClient.destroy();
       this._gatewayClient = null;
@@ -647,6 +653,73 @@ export class MachineRelaySession {
     return true;
   }
 
+  /**
+   * Respond to application-layer ping from Phone (encrypted pong).
+   * @param {object} json decrypted ping body
+   * @param {boolean} [bridgeConnected]
+   */
+  handleApplicationPing(json, bridgeConnected = false) {
+    const pong = {
+      type: 'pong',
+      id: json.id,
+      ts: Date.now(),
+      bridgeConnected: Boolean(bridgeConnected),
+    };
+    this.sendPlaintextToPhone(JSON.stringify(pong));
+  }
+
+  _stopMiddlewareKeepalive() {
+    if (this._middlewarePingTimer) {
+      clearInterval(this._middlewarePingTimer);
+      this._middlewarePingTimer = null;
+    }
+    if (this._middlewarePongTimeout) {
+      clearTimeout(this._middlewarePongTimeout);
+      this._middlewarePongTimeout = null;
+    }
+  }
+
+  _startMiddlewareKeepalive() {
+    this._stopMiddlewareKeepalive();
+    const PING_MS = 30_000;
+    const PONG_TIMEOUT_MS = 10_000;
+    if (!this.middlewareWs) return;
+    this._lastMiddlewarePongAt = Date.now();
+    this.middlewareWs.on('pong', () => {
+      this._lastMiddlewarePongAt = Date.now();
+      if (this._middlewarePongTimeout) {
+        clearTimeout(this._middlewarePongTimeout);
+        this._middlewarePongTimeout = null;
+      }
+    });
+    this._middlewarePingTimer = setInterval(() => {
+      if (!this.middlewareWs || this.middlewareWs.readyState !== 1) return;
+      try {
+        this.middlewareWs.ping();
+      } catch {
+        try {
+          this.middlewareWs.terminate();
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      if (this._middlewarePongTimeout) clearTimeout(this._middlewarePongTimeout);
+      this._middlewarePongTimeout = setTimeout(() => {
+        const stale = Date.now() - (this._lastMiddlewarePongAt || 0);
+        if (stale > PONG_TIMEOUT_MS) {
+          try {
+            this.middlewareWs?.terminate();
+          } catch {
+            /* ignore */
+          }
+        }
+      }, PONG_TIMEOUT_MS);
+      this._middlewarePongTimeout.unref?.();
+    }, PING_MS);
+    this._middlewarePingTimer.unref?.();
+  }
+
   static safeLoadClientPublicKey(publicKeyHex) {
     try {
       const bytes = hexToBytes(String(publicKeyHex || '').trim());
@@ -736,6 +809,7 @@ export class MachineRelaySession {
 
     this.middlewareWs.on('open', () => {
       this.reconnectAttempt = 0;
+      this._startMiddlewareKeepalive();
       logger.info('middleware_connected', {
         clientId: this.clientId,
         url,
@@ -791,7 +865,19 @@ export class MachineRelaySession {
             this.chatroomBoxKeys.peerPublicKey,
             this.chatroomBoxKeys.secretKey
           );
-          if (plain) this.deliverPlaintextToConsumer(plain);
+          if (plain) {
+            let parsed;
+            try {
+              parsed = JSON.parse(plain);
+            } catch {
+              parsed = null;
+            }
+            if (parsed?.type === 'ping') {
+              this.handleApplicationPing(parsed, this.getBridgeConnected());
+              return;
+            }
+            this.deliverPlaintextToConsumer(plain);
+          }
         }
       } catch (err) {
         relayErrorsTotal.inc();
@@ -800,6 +886,7 @@ export class MachineRelaySession {
     });
 
     this.middlewareWs.on('close', () => {
+      this._stopMiddlewareKeepalive();
       middlewareDisconnectsTotal.inc();
       this.middlewareWs = null;
       this.chatroomBoxKeys = null;

@@ -15,6 +15,8 @@ assert_has() {
 
 check_core_markers() {
   local file="$1"
+  assert_has "${file}" "ombist_ensure_node22"
+  assert_has "${file}" "openclaw-compose failed \\(gateway will not start\\)"
   assert_has "${file}" "assert_openclaw_gateway_mode_local\\(\\)"
   assert_has "${file}" "assert_openclaw_gateway_mode_local \\\"\\$\\{OPENCLAW_CONFIG_PATH\\}\\\""
   assert_has "${file}" "systemctl restart ombist-openclaw-gateway.service"
@@ -48,8 +50,16 @@ MAIN_SINGLE_TOOLS="${ROOT_DIR}/Ombot/tools/provision-single-bot.sh"
 MAIN_SINGLE_IOS="${ROOT_DIR}/Ombist_IOS/Ombist_IOS/Resources/provision-single-bot.sh"
 MAIN_HEADLESS_TOOLS="${ROOT_DIR}/Ombot/tools/provision-headless.sh"
 MAIN_HEADLESS_IOS="${ROOT_DIR}/Ombist_IOS/Ombist_IOS/Resources/provision-headless.sh"
+LIB_TOOLS="${ROOT_DIR}/Ombot/tools/provision-lib-common.sh"
+LIB_IOS="${ROOT_DIR}/Ombist_IOS/Ombist_IOS/Resources/provision-lib-common.sh"
 
 check_pair "${MAIN_SINGLE_TOOLS}" "${MAIN_SINGLE_IOS}"
 check_pair "${MAIN_HEADLESS_TOOLS}" "${MAIN_HEADLESS_IOS}"
+
+if ! diff -q "${LIB_TOOLS}" "${LIB_IOS}" >/dev/null 2>&1; then
+  echo "provision-sync: ${LIB_TOOLS##*/} differs from iOS Resources copy" >&2
+  exit 1
+fi
+echo "provision-sync: ok ${LIB_TOOLS##*/} <-> ${LIB_IOS##*/}"
 
 echo "provision-sync: all core markers are in sync."

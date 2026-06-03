@@ -3,7 +3,7 @@
 # Install: /opt/ombot/bin/ombot-admin + /opt/ombot/bin/ombot-admin-lib/
 set -uo pipefail
 
-OMBOT_ADMIN_VERSION="1.6.0"
+OMBOT_ADMIN_VERSION="1.7.0"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="${ROOT}/ombot-admin-lib"
 
@@ -51,6 +51,8 @@ die() {
 . "${LIB}/route-sync.sh"
 # shellcheck source=/dev/null
 . "${LIB}/openai-env.sh"
+# shellcheck source=/dev/null
+. "${LIB}/bot-ensure-ready.sh"
 
 usage() {
   cat <<'EOF'
@@ -71,11 +73,13 @@ Usage:
   ombot-admin tools install [--json]
   ombot-admin gateway health-gates [--json]
   ombot-admin gateway config-drift [--json]
+  ombot-admin gateway loopback [--json]
+  ombot-admin bot ensure-ready [--skip-route] [--json]
 EOF
 }
 
 cmd_version() {
-  local caps='["tls","preflight","systemctl","route_sync","router","router_probe","health_port","openclaw_config","openclaw_compose","openclaw_repair_route","openai_env","tools_install"]'
+  local caps='["tls","preflight","systemctl","route_sync","router","router_probe","health_port","openclaw_config","openclaw_compose","openclaw_repair_route","openai_env","tools_install","bot_ensure_ready","gateway_loopback","gateway_health_gates","gateway_config_drift"]'
   local data
   data="$(printf '{"version":%s,"capabilities":%s}' "$(ombist_json_escape_string "${OMBOT_ADMIN_VERSION}")" "${caps}")"
   ombist_emit_envelope true "version" "ombot-admin ${OMBOT_ADMIN_VERSION}" "${data}" "[]" "[]"
@@ -281,6 +285,10 @@ main() {
         loopback) ombist_cmd_gateway_loopback_main ;;
         *) die "gateway supports: health-gates | config-drift | loopback" ;;
       esac
+      ;;
+    bot)
+      [[ "${args[1]:-}" == "ensure-ready" ]] || die "bot only supports ensure-ready"
+      ombist_cmd_bot_ensure_ready_main "${args[@]:2}"
       ;;
     *)
       die "unknown command: ${args[0]}"

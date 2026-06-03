@@ -88,7 +88,7 @@ process.stdout.write(`gateway gates ${status}; pairing=${p.hits}, scope=${s.hits
 ombist_cmd_gateway_config_drift_main() {
   local env_path runtime_cfg
   env_path="${OMBOT_ENV_PATH:-/etc/ombot/ombot.env}"
-  runtime_cfg="${OPENCLAW_RUNTIME_CONFIG_PATH:-/home/ombot/.openclaw/openclaw.json}"
+  runtime_cfg="${OPENCLAW_RUNTIME_CONFIG_PATH:-/var/lib/ombot/openclaw.json}"
   local ombot_home="${OMBOT_HOME:-/home/ombot}"
   local frag_dir="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}"
   local ombot_tools_dir="${OMBOT_TOOLS_DIR:-}"
@@ -191,6 +191,7 @@ const drift = Array.isArray(base.drift) ? base.drift.slice() : [];
 if (ext.composedMatchesRuntime === false) drift.push("composed_runtime_vs_fragments_mismatch");
 if (ext.bridgeAgentIdMatch === false) drift.push("bridge_agent_id_vs_agents_list");
 if (ext.llmSecretDuplicationWarning) drift.push("llm_secret_env_and_auth_profiles_overlap");
+if (ext.authProfileKeyIsUrl) drift.push("auth_profile_key_is_http_url");
 base.drift = drift;
 base.openclawExtended = ext;
 process.stdout.write(JSON.stringify(base));

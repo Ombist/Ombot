@@ -120,10 +120,11 @@ function resolveToolsDir() {
 
 function resolveConfigPaths() {
   const fragmentsDir = (process.env.OPENCLAW_FRAGMENTS_DIR || '/etc/ombot/openclaw.d').trim();
+  const dataDir = (process.env.OPENCLAW_DATA_DIR || '/var/lib/ombot').trim();
   const runtimePath = (
     process.env.OPENCLAW_RUNTIME_CONFIG_PATH ||
-    process.env.OPENCLAW_CONFIG_PATH ||
-    '/home/ombot/.openclaw/openclaw.json'
+    (dataDir ? `${dataDir.replace(/\/$/, '')}/openclaw.json` : '') ||
+    '/var/lib/ombot/openclaw.json'
   ).trim();
   const etcPath = (process.env.OPENCLAW_CONFIG_PATH || '/etc/ombot/openclaw.json').trim();
   return { fragmentsDir, runtimePath, etcPath };
@@ -572,7 +573,6 @@ export async function runOpenClawConfigSelfHeal(opts = {}) {
     const ok =
       !actions.includes('compose_failed') &&
       !actions.some((a) => a.startsWith('gateway_still_down'));
-    const { runtimePath } = resolveConfigPaths();
     const gatewayMode = readRuntimeGatewayMode(runtimePath);
     logger.info('openclaw_self_heal_done', {
       trigger,

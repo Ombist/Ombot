@@ -24,24 +24,10 @@ import {
 } from './openclawConfigSelfHeal.js';
 import { ProviderFallbackClient } from './providerFallbackClient.js';
 import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
-
-/** Duplicated from openclawGatewayBridge.js to avoid circular imports. */
-function extractAssistantTextFromGateway(msg) {
-  if (!msg || typeof msg !== 'object') return null;
-  if (msg.type === 'res' && msg.ok === false) {
-    const err = msg.error && typeof msg.error === 'object' ? msg.error.message || msg.error.code : msg.error;
-    return err != null ? `[error] ${String(err)}` : '[error]';
-  }
-  const p = msg.payload;
-  if (p && typeof p === 'object') {
-    if (p.text != null) return String(p.text);
-    if (p.message != null) return String(p.message);
-    if (p.content != null) return String(p.content);
-  }
-  if (typeof p === 'string') return p;
-  if (msg.text != null) return String(msg.text);
-  return null;
-}
+import {
+  extractAssistantTextFromGateway,
+  isGatewayAcceptedAck,
+} from './gatewayResponseText.js';
 
 function makeReqId() {
   return `ombot-sc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -731,7 +717,7 @@ export class GatewayAgentClient {
           const t = extractAssistantTextFromGateway(resMsg);
           if (t) {
             this.onAssistantText(t);
-          } else {
+          } else if (!isGatewayAcceptedAck(resMsg)) {
             logger.warn('single_client_gateway_res_no_text', {
               id,
               ok: resMsg?.ok,

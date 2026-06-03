@@ -11,6 +11,7 @@ import {
 import { createMiddlewareHttpsAgent } from './middlewareTlsAgent.js';
 import { MachineRelaySession } from './machineRelaySession.js';
 import {
+  getGatewayBridgeConnected,
   shouldStartGatewayBridge,
   startOpenClawGatewayBridge,
   stopOpenClawGatewayBridge,
@@ -229,6 +230,10 @@ wss.on('connection', (clientWs, req) => {
 
     if (SINGLE_CLIENT_MODE && json.type === 'encrypted') {
       const dec = session.tryDecryptClientBox(raw, json);
+      if (dec && dec.json.type === 'ping') {
+        session.handleApplicationPing(dec.json, getGatewayBridgeConnected());
+        return;
+      }
       if (dec && dec.json.type === 'req') {
         session.relaySignedReqToMiddleware(dec.raw, dec.json);
       } else if (String(process.env.OPENCLAW_STRICT_PAIRING_PROFILE || '1') !== '0') {

@@ -44,7 +44,8 @@ TLS_DIR="/etc/ombot/tls"
 NGINX_SITE="/etc/nginx/sites-available/ombist-single-bot.conf"
 OMBOT_ENV_PATH="${OMBOT_ENV_PATH:-/etc/ombot/ombot.env}"
 OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
-OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH:-${OMBOT_HOME}/.openclaw/openclaw.json}"
+# Runtime JSON under OMBOT_DATA_DIR (not ~/.openclaw): ombist-ombot uses ProtectHome=true and cannot rely on ReadWritePaths under /home for compose/self-heal.
+OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH:-${OMBOT_DATA_DIR}/openclaw.json}"
 OPENCLAW_FRAGMENTS_DIR="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}"
 GW_SERVICE_PATH="/etc/systemd/system/ombist-openclaw-gateway.service"
 OMBOT_SERVICE_PATH="/etc/systemd/system/ombist-ombot.service"
@@ -257,46 +258,12 @@ if ! ombist_tls_provision_initial "${PUBHOST}"; then
 fi
 echo "ombist-provision-single-bot: server.crt OK (leaf signed)"
 
-ombist_install_node22_via_apt_nodesource() {
-  ombist_root_apt_get update -y || return 1
-  ombist_root_apt_get install -y ca-certificates curl gnupg || return 1
-  ombist_apt_purge_distro_node_before_nodesource || return 1
-  as_root mkdir -p /etc/apt/keyrings
-  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | as_root gpg --dearmor --batch --yes -o /etc/apt/keyrings/nodesource.gpg
-  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | as_root tee /etc/apt/sources.list.d/nodesource.list >/dev/null
-  ombist_root_apt_get update -y || return 1
-  ombist_root_apt_get install -y nodejs || return 1
-}
-
-echo "ombist-provision-single-bot: ensuring nodejs >= 22..."
-NODE_MAJOR=0
-if command -v node >/dev/null 2>&1; then
-  NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-fi
-if [[ "${NODE_MAJOR}" -lt 22 ]]; then
-  if command -v apt-get >/dev/null 2>&1; then
-    echo "ombist-provision-single-bot: installing Node.js 22 via NodeSource (apt)..."
-    ombist_install_node22_via_apt_nodesource || {
-      echo "ombist-provision-single-bot: NodeSource nodejs install failed" >&2
-      exit 1
-    }
-  elif command -v dnf >/dev/null 2>&1; then
-    as_root dnf install -y nodejs npm || as_root dnf install -y nodejs
-  elif command -v yum >/dev/null 2>&1; then
-    as_root yum install -y nodejs npm || as_root yum install -y nodejs
-  else
-    echo "ombist-provision-single-bot: nodejs is required but no supported package manager found" >&2
-    exit 1
-  fi
-fi
-if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-  echo "ombist-provision-single-bot: nodejs/npm install step finished but node or npm still unavailable" >&2
-  exit 1
-fi
-NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-if [[ "${NODE_MAJOR}" -lt 22 ]]; then
-  echo "ombist-provision-single-bot: node version too old (found $(node -v 2>/dev/null || echo unknown), require >= 22)" >&2
-  exit 1
+OMBIST_PROVISION_LABEL="ombist-provision-single-bot"
+echo "${OMBIST_PROVISION_LABEL}: ensuring nodejs >= 22..."
+ombist_ensure_node22
+if ! command -v npm >/dev/null 2>&1; then
+  echo "${OMBIST_PROVISION_LABEL}: npm not found after node install" >&2
+  exit 14
 fi
 
 echo "ombist-provision-single-bot: installing openclaw..."
@@ -371,7 +338,8 @@ as_root env \
   OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}" \
   OPENCLAW_COMPOSE_USE_FLOCK=0 \
   "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/openclaw-compose.mjs" || {
-  echo "ombist-provision-single-bot: warning: openclaw-compose failed (gateway may stay on status=78/CONFIG)" >&2
+  echo "ombist-provision-single-bot: openclaw-compose failed (gateway will not start)" >&2
+  exit 28
 }
 
 OMBIST_GATEWAY_AGENT_ID="${OMBIST_GATEWAY_AGENT_ID:-default}"
@@ -384,7 +352,10 @@ as_root env \
   OPENCLAW_RUNTIME_CONFIG_PATH="${OPENCLAW_RUNTIME_CONFIG_PATH}" \
   OPENCLAW_CONFIG_PATH="${OPENCLAW_CONFIG_PATH}" \
   OPENCLAW_COMPOSE_USE_FLOCK=0 \
-  "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs"
+  "${OMBIST_NODE_BIN}" "${OMBOT_REPO_DIR}/tools/ensure-openclaw-gateway-agent.mjs" || {
+  echo "ombist-provision-single-bot: ensure-openclaw-gateway-agent failed" >&2
+  exit 29
+}
 as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chmod 640 "${OPENCLAW_RUNTIME_CONFIG_PATH}"
 as_root chown root:"${OMBOT_GROUP}" "${OPENCLAW_CONFIG_PATH}"
@@ -406,6 +377,8 @@ as_root chown "${OMBOT_USER}:${OMBOT_GROUP}" "${OPENCLAW_FRAGMENTS_DIR}/30-ombis
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
   echo "OPENCLAW_FRAGMENTS_DIR=${OPENCLAW_FRAGMENTS_DIR}"
   echo "OPENCLAW_DATA_DIR=${OMBOT_DATA_DIR}"
+  echo "OPENCLAW_RUNTIME_CONFIG_PATH=${OPENCLAW_RUNTIME_CONFIG_PATH}"
+  echo "OPENCLAW_CONFIG_PATH=${OPENCLAW_CONFIG_PATH}"
   echo 'OPENCLAW_BRIDGE_OPERATOR_SCOPES=["operator.read","operator.write","operator.admin"]'
   echo "OPENCLAW_BRIDGE_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"
   echo "OPENCLAW_BRIDGE_GATEWAY_DEFAULT_AGENT_ID=${OMBIST_GATEWAY_AGENT_ID}"

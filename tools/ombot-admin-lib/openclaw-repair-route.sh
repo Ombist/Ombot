@@ -84,7 +84,7 @@ ombist_repair_openclaw_json_file() {
 
 ombist_cmd_openclaw_config_repair_route_main() {
   local cfg="${OPENCLAW_CONFIG_PATH:-/etc/ombot/openclaw.json}"
-  local runtime_cfg="${OPENCLAW_RUNTIME_CONFIG_PATH:-/home/ombot/.openclaw/openclaw.json}"
+  local runtime_cfg="${OPENCLAW_RUNTIME_CONFIG_PATH:-/var/lib/ombot/openclaw.json}"
   local frag_dir="${OPENCLAW_FRAGMENTS_DIR:-/etc/ombot/openclaw.d}"
   local port="${OPENCLAW_GATEWAY_PORT:-18789}"
   local ombot_user="${OMBOT_USER:-ombot}"

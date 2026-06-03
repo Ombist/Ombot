@@ -111,3 +111,126 @@ ombist_apt_purge_distro_node_before_nodesource() {
   fi
   ombist_root_apt_get autoremove -y || true
 }
+
+# Node.js major version for a binary (default: `node` on PATH). Prints 0 on failure.
+ombist_node_major() {
+  local node_bin="${1:-}"
+  if [[ -z "${node_bin}" ]]; then
+    command -v node >/dev/null 2>&1 || return 1
+    node_bin="$(command -v node)"
+  fi
+  "${node_bin}" -p 'parseInt(process.versions.node.split(".")[0],10)' 2>/dev/null || printf '0\n'
+}
+
+# Resolve ombot-user nvm Node 22 binary (requires run_as_ombot, OMBOT_HOME).
+ombist_ombot_nvm_node_bin() {
+  local nvm_ver="${NVM_VERSION:-v0.40.1}"
+  if ! declare -F run_as_ombot >/dev/null 2>&1; then
+    return 1
+  fi
+  : "${OMBOT_HOME:?OMBOT_HOME required for ombot nvm}"
+  run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; \
+if [[ ! -s \"\${NVM_DIR}/nvm.sh\" ]]; then curl -fsSL 'https://raw.githubusercontent.com/nvm-sh/nvm/${nvm_ver}/install.sh' | bash; fi; \
+source \"\${NVM_DIR}/nvm.sh\"; \
+if ! nvm use 22 >/dev/null 2>&1; then nvm install 22 >/dev/null; nvm alias default 22 >/dev/null; fi; \
+nvm use 22 >/dev/null; command -v node" | head -n1 | tr -d '\r'
+}
+
+ombist_install_node22_via_apt_nodesource() {
+  if ! declare -F as_root >/dev/null 2>&1 || ! declare -F ombist_root_apt_get >/dev/null 2>&1; then
+    echo "ombist-provision: NodeSource install requires as_root and ombist_root_apt_get" >&2
+    return 1
+  fi
+  ombist_root_apt_get update -y || return 1
+  ombist_root_apt_get install -y ca-certificates curl gnupg || return 1
+  ombist_apt_purge_distro_node_before_nodesource || return 1
+  as_root mkdir -p /etc/apt/keyrings
+  curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | as_root gpg --dearmor --batch --yes -o /etc/apt/keyrings/nodesource.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | as_root tee /etc/apt/sources.list.d/nodesource.list >/dev/null
+  ombist_root_apt_get update -y || return 1
+  ombist_root_apt_get install -y nodejs || return 1
+}
+
+# Install Node 22 under ombot via nvm; optionally symlink node/npm into /usr/local/bin for system tools.
+ombist_install_node22_via_nvm_for_ombot() {
+  local label="${OMBIST_PROVISION_LABEL:-ombist-provision}"
+  local node_bin npm_bin
+  if ! declare -F run_as_ombot >/dev/null 2>&1; then
+    echo "${label}: nvm fallback requires run_as_ombot" >&2
+    return 1
+  fi
+  : "${OMBOT_HOME:?OMBOT_HOME required}"
+  echo "${label}: installing Node.js 22 via nvm for ${OMBOT_USER:-ombot}..."
+  node_bin="$(ombist_ombot_nvm_node_bin)" || node_bin=""
+  if [[ -z "${node_bin}" || ! -x "${node_bin}" ]]; then
+    echo "${label}: nvm node binary not found after install" >&2
+    return 1
+  fi
+  if declare -F as_root >/dev/null 2>&1; then
+    as_root mkdir -p /usr/local/bin
+    as_root ln -sf "${node_bin}" /usr/local/bin/node
+    npm_bin="$(dirname "${node_bin}")/npm"
+    if [[ -x "${npm_bin}" ]]; then
+      as_root ln -sf "${npm_bin}" /usr/local/bin/npm
+    fi
+  fi
+}
+
+# Ensure Node >= 22 on PATH (system) or via ombot nvm. Exit 14 on failure.
+ombist_ensure_node22() {
+  local label="${OMBIST_PROVISION_LABEL:-ombist-provision}"
+  local major=0
+  local node_bin=""
+
+  if command -v node >/dev/null 2>&1; then
+    major="$(ombist_node_major 2>/dev/null || echo 0)"
+    if [[ "${major}" -ge 22 ]]; then
+      return 0
+    fi
+    echo "${label}: current node v$(node -v 2>/dev/null || echo unknown) < 22; upgrading..."
+  else
+    echo "${label}: node not found; installing >= 22..."
+  fi
+
+  if command -v apt-get >/dev/null 2>&1 && declare -F ombist_install_node22_via_apt_nodesource >/dev/null 2>&1; then
+    echo "${label}: trying NodeSource (apt)..."
+    if ombist_install_node22_via_apt_nodesource; then
+      hash -r 2>/dev/null || true
+    else
+      echo "${label}: NodeSource (apt) failed; trying nvm fallback..." >&2
+    fi
+  elif command -v dnf >/dev/null 2>&1 && declare -F as_root >/dev/null 2>&1; then
+    as_root dnf install -y nodejs npm 2>/dev/null || as_root dnf install -y nodejs 2>/dev/null || true
+  elif command -v yum >/dev/null 2>&1 && declare -F as_root >/dev/null 2>&1; then
+    as_root yum install -y nodejs npm 2>/dev/null || as_root yum install -y nodejs 2>/dev/null || true
+  fi
+
+  if command -v node >/dev/null 2>&1; then
+    major="$(ombist_node_major 2>/dev/null || echo 0)"
+    if [[ "${major}" -ge 22 ]]; then
+      return 0
+    fi
+  fi
+
+  if declare -F ombist_install_node22_via_nvm_for_ombot >/dev/null 2>&1; then
+    if ombist_install_node22_via_nvm_for_ombot; then
+      hash -r 2>/dev/null || true
+      if command -v node >/dev/null 2>&1; then
+        major="$(ombist_node_major 2>/dev/null || echo 0)"
+        if [[ "${major}" -ge 22 ]]; then
+          return 0
+        fi
+      fi
+      node_bin="$(ombist_ombot_nvm_node_bin 2>/dev/null || true)"
+      if [[ -n "${node_bin}" && -x "${node_bin}" ]]; then
+        major="$(ombist_node_major "${node_bin}" 2>/dev/null || echo 0)"
+        if [[ "${major}" -ge 22 ]]; then
+          return 0
+        fi
+      fi
+    fi
+  fi
+
+  echo "${label}: node version too old or missing (found $(node -v 2>/dev/null || echo none), require >= 22)" >&2
+  exit 14
+}

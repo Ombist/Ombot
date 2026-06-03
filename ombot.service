@@ -14,6 +14,8 @@ Environment=PORT=8082
 Environment=HEALTH_PORT=9090
 Environment=MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws
 Environment=OPENCLAW_DATA_DIR=/var/lib/ombot
+Environment=OPENCLAW_RUNTIME_CONFIG_PATH=/var/lib/ombot/openclaw.json
+Environment=OPENCLAW_CONFIG_PATH=/etc/ombot/openclaw.json
 # Optional: merge OpenClaw Gateway (loopback) with Phone via Ombers — set in ombot.env
 # OPENCLAW_GATEWAY_BRIDGE=1
 # OPENCLAW_BRIDGE_AGENT_ID=default
