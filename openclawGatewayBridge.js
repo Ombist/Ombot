@@ -31,6 +31,7 @@ import {
   extractAssistantTextFromGateway,
   isGatewayAcceptedAck,
 } from './gatewayResponseText.js';
+import { assistantTextForConsumer, GatewayReplyDeduper } from './gatewayAssistantDispatch.js';
 
 export { extractAssistantTextFromGateway, isGatewayAcceptedAck };
 
@@ -216,6 +217,7 @@ export class OpenClawGatewayBridge {
     this._gatewayPongTimeout = null;
     this._lastGatewayPongAt = null;
     this._gatewayIdentity = null;
+    this._replyDeduper = new GatewayReplyDeduper();
     this._initGateStatus();
   }
 
@@ -692,21 +694,10 @@ export class OpenClawGatewayBridge {
           return;
         }
       }
-      if (msg.type === 'event') {
-        const text = extractAssistantTextFromGateway({ type: 'res', ok: true, payload: msg.payload });
-        const t = text ?? extractAssistantTextFromGateway(msg);
-        if (t && this.session) {
-          gatewayBridgeGatewayToPhoneTotal.inc();
-          this.session.sendPlaintextToPhone(assistantTextToPhoneRes(t));
-        }
-        return;
-      }
-      if (msg.type === 'res') {
-        const t = extractAssistantTextFromGateway(msg);
-        if (t && this.session) {
-          gatewayBridgeGatewayToPhoneTotal.inc();
-          this.session.sendPlaintextToPhone(assistantTextToPhoneRes(t));
-        }
+      const t = assistantTextForConsumer(msg, this._replyDeduper);
+      if (t && this.session) {
+        gatewayBridgeGatewayToPhoneTotal.inc();
+        this.session.sendPlaintextToPhone(assistantTextToPhoneRes(t));
       }
     } catch (err) {
       gatewayBridgeErrorsTotal.inc();
@@ -835,6 +826,7 @@ export class OpenClawGatewayBridge {
         resolve();
         return;
       }
+      this._replyDeduper.reset();
       const id = makeReqId();
       const params = {
         message: userText,
@@ -872,7 +864,7 @@ export class OpenClawGatewayBridge {
           } else {
             this._setGate('provider', 'pass', 'agent_ok');
           }
-          const t = extractAssistantTextFromGateway(resMsg);
+          const t = assistantTextForConsumer(resMsg, this._replyDeduper);
           if (t && this.session) {
             gatewayBridgeGatewayToPhoneTotal.inc();
             this.session.sendPlaintextToPhone(assistantTextToPhoneRes(t));

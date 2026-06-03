@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { MachineRelaySession } from '../machineRelaySession.js';
+import { startSingleClientGateway, stopSingleClientGateway } from '../singleClientGateway.js';
 import { generateKeyPairFromSeed, hexToBytes, sign } from '../ed25519.js';
 import { boxKeyPair, decrypt, encrypt, publicKeyToBase64 } from '../boxCrypto.js';
 import {
@@ -42,6 +43,7 @@ describe('MachineRelaySession single-client mode', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    stopSingleClientGateway();
   });
 
   function completeStrictRegister(session, sent) {
@@ -208,8 +210,10 @@ describe('MachineRelaySession single-client mode', () => {
     session.destroy();
   });
 
-  it('relays signed req to gateway and encrypts assistant reply', async () => {
-    vi.stubEnv('OPENCLAW_GATEWAY_URL', '');
+  it(
+    'relays signed req to gateway and encrypts assistant reply',
+    async () => {
+    stopSingleClientGateway();
     const gatewayFrames = [];
     const wss = new WebSocketServer({ port: 0 });
     await new Promise((r) => wss.on('listening', r));
@@ -236,9 +240,11 @@ describe('MachineRelaySession single-client mode', () => {
       });
     });
 
+    vi.stubEnv('OPENCLAW_SINGLE_CLIENT_MODE', '1');
     vi.stubEnv('OPENCLAW_GATEWAY_URL', gwUrl);
     // Mock gateway does not emit `event: connect.challenge`; use blind-first connect.
     vi.stubEnv('OPENCLAW_GATEWAY_LEGACY_BLIND_CONNECT', '1');
+    startSingleClientGateway();
 
     const sent = [];
     const clientWs = {
@@ -274,7 +280,7 @@ describe('MachineRelaySession single-client mode', () => {
     const ok = session.relaySignedReqSingleClient(raw, reqJson);
     expect(ok).toBe(true);
 
-    await new Promise((r) => setTimeout(r, 150));
+    await new Promise((r) => setTimeout(r, 400));
 
     const enc = sent.find((x) => x.type === 'encrypted');
     expect(enc).toBeTruthy();
@@ -285,6 +291,9 @@ describe('MachineRelaySession single-client mode', () => {
     expect(plain.payload.text).toBe('hello-back');
 
     session.destroy();
+    stopSingleClientGateway();
     await new Promise((r) => wss.close(r));
-  });
+  },
+    15_000
+  );
 });

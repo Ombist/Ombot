@@ -64,6 +64,22 @@ sudo systemctl restart ombist-openclaw-gateway ombist-ombot
 
 Agent 会话与 `auth-profiles.json` 仍在 `~ombot/.openclaw/agents/`（`ReadWritePaths` 保留该目录）。
 
+## Chat room 無回覆（iOS 斷線後模型才完成）
+
+若日誌顯示：使用者發問 → `accepted` → **iOS WebSocket 斷線**（如 `encrypted_frame_invalid`）→ 數十秒後 Gateway 才有長文，則舊版會隨 session **關閉 Gateway WS**，回答無處轉發。
+
+現行：**進程級共用 Gateway**（`singleClientGateway.js`），ombot 啟動即預連；回覆送到**目前活躍的 iOS 連線**（重連後註冊新 session）。無連線時日誌：`single_client_reply_dropped` / `single_client_reply_send_failed`。
+
+```bash
+sudo systemctl restart ombist-ombot
+```
+
+## Chat room 出現兩條相同回覆
+
+OpenClaw Gateway 同一輪會發 **`event: chat` `state: final`** 與 **`event: agent` lifecycle end**；舊版 ombot 兩條都轉發給 iOS。現行 ombot 僅轉發 **chat final**，並以 **`runId` 去重**（含晚到的 `res`）。
+
+部署後請 `sudo systemctl restart ombist-ombot` 並在 chat room 發**新問題**驗證（舊訊息不會自動合併）。
+
 ## Gateway 401 `not authorized` (LKEAP / custom OpenAI-compatible)
 
 OpenClaw reads **`auth-profiles.json` first**. If `"key"` is an HTTP URL (e.g. `https://api.lkeap.cloud.tencent.com/plan/v3`) instead of `sk-…`, the Gateway sends that URL as the Bearer token → **401**, not a model error.

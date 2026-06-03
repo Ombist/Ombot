@@ -24,10 +24,8 @@ import {
 } from './openclawConfigSelfHeal.js';
 import { ProviderFallbackClient } from './providerFallbackClient.js';
 import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
-import {
-  extractAssistantTextFromGateway,
-  isGatewayAcceptedAck,
-} from './gatewayResponseText.js';
+import { assistantTextForConsumer, GatewayReplyDeduper } from './gatewayAssistantDispatch.js';
+import { isGatewayAcceptedAck } from './gatewayResponseText.js';
 
 function makeReqId() {
   return `ombot-sc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -183,6 +181,7 @@ export class GatewayAgentClient {
     this._connectSent = false;
     this._connectChallengeTimer = null;
     this._gatewayIdentity = null;
+    this._replyDeduper = new GatewayReplyDeduper();
     gatewayBridgeGateState.labels('pairing').set(-1);
     gatewayBridgeGateState.labels('scope').set(-1);
     gatewayBridgeGateState.labels('provider').set(
@@ -625,17 +624,8 @@ export class GatewayAgentClient {
           return;
         }
       }
-      if (msg.type === 'event') {
-        const t =
-          extractAssistantTextFromGateway({ type: 'res', ok: true, payload: msg.payload }) ??
-          extractAssistantTextFromGateway(msg);
-        if (t) this.onAssistantText(t);
-        return;
-      }
-      if (msg.type === 'res') {
-        const t = extractAssistantTextFromGateway(msg);
-        if (t) this.onAssistantText(t);
-      }
+      const t = assistantTextForConsumer(msg, this._replyDeduper);
+      if (t) this.onAssistantText(t);
     } catch (err) {
       logger.error('single_client_gateway_parse_error', { err: err.message });
     }
@@ -675,6 +665,7 @@ export class GatewayAgentClient {
         resolve();
         return;
       }
+      this._replyDeduper.reset();
       const id = makeReqId();
       const params = {
         message: userText,
@@ -714,7 +705,7 @@ export class GatewayAgentClient {
           } else {
             gatewayBridgeGateState.labels('provider').set(1);
           }
-          const t = extractAssistantTextFromGateway(resMsg);
+          const t = assistantTextForConsumer(resMsg, this._replyDeduper);
           if (t) {
             this.onAssistantText(t);
           } else if (!isGatewayAcceptedAck(resMsg)) {

@@ -4,7 +4,11 @@ import { writeAuditEvent } from './auditLog.js';
 import { loadChatroomKeysSync, saveChatroomKeysSync } from './chatroomStorage.js';
 import { hexToBytes } from './ed25519.js';
 import { logger } from './logger.js';
-import { GatewayAgentClient } from './gatewayAgentClient.js';
+import {
+  getSharedGatewayClient,
+  registerSingleClientActiveSession,
+  unregisterSingleClientActiveSession,
+} from './singleClientGateway.js';
 import { scheduleOpenClawSelfHealOnGatewayUnavailable } from './openclawConfigSelfHeal.js';
 import { resolveGatewayTurnAgentId } from './gatewayTurnAgentId.js';
 import {
@@ -86,7 +90,7 @@ export class MachineRelaySession {
     this._middlewarePingTimer = null;
     this._middlewarePongTimeout = null;
     this._lastMiddlewarePongAt = null;
-    /** @type {GatewayAgentClient | null} */
+    /** @type {import('./gatewayAgentClient.js').GatewayAgentClient | null} */
     this._gatewayClient = null;
     /** @type {string | null} */
     this.singleClientAgentId = null;
@@ -110,7 +114,9 @@ export class MachineRelaySession {
   destroy() {
     this._destroyed = true;
     this._stopMiddlewareKeepalive();
-    if (this._gatewayClient) {
+    if (this.config.SINGLE_CLIENT_MODE) {
+      unregisterSingleClientActiveSession(this);
+    } else if (this._gatewayClient) {
       this._gatewayClient.destroy();
       this._gatewayClient = null;
     }
@@ -282,6 +288,9 @@ export class MachineRelaySession {
       type: 'peer_public_key',
       publicKey: publicKeyToBase64(this.chatroomBoxKeys.publicKey),
     });
+    if (this.config.SINGLE_CLIENT_MODE) {
+      registerSingleClientActiveSession(this);
+    }
   }
 
   /**
@@ -562,7 +571,8 @@ export class MachineRelaySession {
       return true;
     }
     this.ensureSingleClientGateway();
-    if (!this._gatewayClient) {
+    const gateway = getSharedGatewayClient();
+    if (!gateway) {
       this.notifyClientJson({
         type: 'error',
         message: 'gateway_unavailable',
@@ -570,8 +580,9 @@ export class MachineRelaySession {
       });
       return true;
     }
-    this._gatewayClient.ensureConnected();
-    if (!this._gatewayClient.isReady()) {
+    registerSingleClientActiveSession(this);
+    gateway.ensureConnected();
+    if (!gateway.isReady()) {
       scheduleOpenClawSelfHealOnGatewayUnavailable('user_turn_gateway_not_ready');
     }
     const fromParams =
@@ -582,33 +593,14 @@ export class MachineRelaySession {
         ? String(json.params.agentId).trim()
         : '';
     const agentId = resolveGatewayTurnAgentId(fromParams || this.singleClientAgentId || undefined);
-    this._gatewayClient.enqueueAgentTurn(userText, agentId);
+    gateway.enqueueAgentTurn(userText, agentId);
     return true;
   }
 
   ensureSingleClientGateway() {
-    if (!this.config.SINGLE_CLIENT_MODE || this._gatewayClient) return;
-    const gatewayUrl = (process.env.OPENCLAW_GATEWAY_URL || 'ws://127.0.0.1:18789').trim();
-    const gatewayToken = (process.env.OPENCLAW_GATEWAY_TOKEN || '').trim();
-    this._gatewayClient = new GatewayAgentClient({
-      gatewayUrl,
-      gatewayToken,
-      agentMethod: (process.env.OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD || 'agent').trim(),
-      onAssistantText: (text) => {
-        const frame = assistantTextToPhoneRes(text);
-        this.sendEncryptedToClientWs(frame);
-      },
-      onError: (err) => {
-        const msg = err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err);
-        logger.warn('single_client_gateway_on_error', { traceId: this.traceId, message: msg });
-        this.notifyClientJson({
-          type: 'error',
-          message: msg.startsWith('gateway_') ? msg : `gateway_error:${msg}`,
-          traceId: this.traceId,
-        });
-      },
-    });
-    this._gatewayClient.ensureConnected();
+    if (!this.config.SINGLE_CLIENT_MODE) return;
+    registerSingleClientActiveSession(this);
+    getSharedGatewayClient()?.ensureConnected();
   }
 
   sendEncryptedToClientWs(plainUtf8) {
