@@ -68,7 +68,10 @@ Agent 会话与 `auth-profiles.json` 仍在 `~ombot/.openclaw/agents/`（`ReadWr
 
 若日誌顯示：使用者發問 → `accepted` → **iOS WebSocket 斷線**（如 `encrypted_frame_invalid`）→ 數十秒後 Gateway 才有長文，則舊版會隨 session **關閉 Gateway WS**，回答無處轉發。
 
-現行：**進程級共用 Gateway**（`singleClientGateway.js`），ombot 啟動即預連；回覆送到**目前活躍的 iOS 連線**（重連後註冊新 session）。無連線時日誌：`single_client_reply_dropped` / `single_client_reply_send_failed`。
+現行：
+
+- **進程級共用 Gateway**（`singleClientGateway.js`），ombot 啟動即預連；回覆送到**目前活躍的 iOS 連線**（重連後註冊新 session）。無連線時日誌：`single_client_reply_dropped` / `single_client_reply_send_failed`。
+- **加密 frame 韌性**（`machineRelaySession.handleSingleClientEncryptedFrame`）：內層 `ping`／`heartbeat`／`keepalive` 回加密 `pong`；`pong`／`res`／`ack` 忽略；其他未知 type 僅 `warn` 不關線。僅解密失敗才 `encrypted_frame_invalid`。明文 `{ type: 'ping' }` 回 `{ type: 'pong' }`。設 `OPENCLAW_ENCRYPTED_HEARTBEAT_REPLY=0` 可改為只忽略心跳、不回 pong。
 
 ```bash
 sudo systemctl restart ombist-ombot

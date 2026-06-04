@@ -170,6 +170,15 @@ export function assistantTextToPhoneRes(text) {
   });
 }
 
+/** Phone-side delivery ACK (gateway accepted user turn). */
+export function messageAckToPhoneEvent(clientMessageId) {
+  return JSON.stringify({
+    type: 'event',
+    event: 'message_ack',
+    payload: { clientMessageId: String(clientMessageId) },
+  });
+}
+
 export class OpenClawGatewayBridge {
   /**
    * @param {{ keyPair: object, config: object, agentId: string, conversationId: string, participantId: string, clientId?: string }} opts
@@ -724,8 +733,14 @@ export class OpenClawGatewayBridge {
     }
     const userText = phonePayloadToUserText(j);
     if (userText == null) return;
+    const clientMessageId =
+      j.params &&
+      typeof j.params === 'object' &&
+      j.params.clientMessageId != null
+        ? String(j.params.clientMessageId).trim()
+        : '';
     gatewayBridgePhoneToGatewayTotal.inc();
-    this._enqueueUserMessage(userText);
+    this._enqueueUserMessage(userText, clientMessageId || undefined);
   }
 
   _stopGatewayKeepalive() {
@@ -780,8 +795,10 @@ export class OpenClawGatewayBridge {
     this._gatewayPingTimer.unref?.();
   }
 
-  _enqueueUserMessage(text) {
-    this._queue.push(text);
+  _enqueueUserMessage(text, clientMessageId) {
+    const cid =
+      clientMessageId == null ? '' : String(clientMessageId).trim();
+    this._queue.push({ text, clientMessageId: cid || undefined });
     this._drainQueue();
   }
 
@@ -794,12 +811,18 @@ export class OpenClawGatewayBridge {
     if (!canSendGateway && !this._autoFallbackEnabled) {
       return;
     }
-    const text = this._queue.shift();
+    const item = this._queue.shift();
+    if (item == null) return;
+    const text = typeof item === 'string' ? item : item.text;
+    const clientMessageId =
+      typeof item === 'object' && item && item.clientMessageId
+        ? item.clientMessageId
+        : undefined;
     if (text == null) return;
     this._inFlight = true;
     try {
       if (canSendGateway) {
-        await this._sendAgentTurn(text);
+        await this._sendAgentTurn(text, clientMessageId);
       } else if (this._autoFallbackEnabled) {
         const usedFallback = await this._tryFallback(
           text,
@@ -819,8 +842,9 @@ export class OpenClawGatewayBridge {
 
   /**
    * @param {string} userText
+   * @param {string} [clientMessageId]
    */
-  _sendAgentTurn(userText) {
+  _sendAgentTurn(userText, clientMessageId) {
     return new Promise((resolve) => {
       if (!this.gatewayWs || this.gatewayWs.readyState !== 1) {
         resolve();
@@ -863,6 +887,13 @@ export class OpenClawGatewayBridge {
             }
           } else {
             this._setGate('provider', 'pass', 'agent_ok');
+          }
+          if (
+            isGatewayAcceptedAck(resMsg) &&
+            clientMessageId &&
+            this.session
+          ) {
+            this.session.sendPlaintextToPhone(messageAckToPhoneEvent(clientMessageId));
           }
           const t = assistantTextForConsumer(resMsg, this._replyDeduper);
           if (t && this.session) {

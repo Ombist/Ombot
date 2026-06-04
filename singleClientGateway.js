@@ -4,6 +4,7 @@
  */
 import { logger } from './logger.js';
 import { GatewayAgentClient } from './gatewayAgentClient.js';
+import { messageAckToPhoneEvent } from './openclawGatewayBridge.js';
 
 function assistantTextToPhoneRes(text) {
   return JSON.stringify({
@@ -37,6 +38,30 @@ export function registerSingleClientActiveSession(session) {
 export function unregisterSingleClientActiveSession(session) {
   if (activeSession === session) {
     activeSession = null;
+  }
+}
+
+function deliverMessageAckToActiveSession(clientMessageId) {
+  const trimmed = typeof clientMessageId === 'string' ? clientMessageId.trim() : '';
+  if (!trimmed) return;
+
+  const session = activeSession;
+  if (!session || session._destroyed) return;
+  if (!session.isClientConnected()) {
+    logger.warn('single_client_ack_dropped', {
+      reason: 'client_not_connected',
+      traceId: session.traceId,
+      clientMessageId: trimmed,
+    });
+    return;
+  }
+
+  const frame = messageAckToPhoneEvent(trimmed);
+  if (!session.sendEncryptedToClientWs(frame)) {
+    logger.warn('single_client_ack_send_failed', {
+      traceId: session.traceId,
+      clientMessageId: trimmed,
+    });
   }
 }
 
@@ -79,6 +104,7 @@ function ensureSharedClient() {
     gatewayToken,
     agentMethod: (process.env.OPENCLAW_BRIDGE_GATEWAY_AGENT_METHOD || 'agent').trim(),
     onAssistantText: deliverAssistantTextToActiveSession,
+    onMessageAck: deliverMessageAckToActiveSession,
     onError: (err) => {
       const msg = err && typeof err === 'object' && 'message' in err ? String(err.message) : String(err);
       logger.warn('single_client_gateway_shared_error', { message: msg });

@@ -47,6 +47,12 @@ function phonePayloadToUserTextFromReq(j) {
   return null;
 }
 
+/** Inner plaintext types treated as application heartbeat (encrypted box). */
+export const CLIENT_HEARTBEAT_INNER_TYPES = new Set(['ping', 'heartbeat', 'keepalive']);
+
+/** Inner types from client that need no server action (e.g. stray pong). */
+export const CLIENT_HEARTBEAT_IGNORE_TYPES = new Set(['pong', 'res', 'ack']);
+
 /**
  * One Machine-side relay: optional local ClawChat client WebSocket + outbound middleware + NaCl box to Phone.
  * Bridge mode: no clientWs; middleware connects immediately after startBridgeSession(); plaintext to Gateway via callback.
@@ -300,18 +306,72 @@ export class MachineRelaySession {
   tryDecryptClientBox(_rawOuter, json) {
     if (!this.chatroomBoxKeys?.peerPublicKey || !this.chatroomBoxKeys?.secretKey) return null;
     if (json.type !== 'encrypted' || !json.nonce || !json.payload) return null;
-    const plain = decrypt(
-      json.nonce,
-      json.payload,
-      this.chatroomBoxKeys.peerPublicKey,
-      this.chatroomBoxKeys.secretKey
-    );
+    let plain;
+    try {
+      plain = decrypt(
+        json.nonce,
+        json.payload,
+        this.chatroomBoxKeys.peerPublicKey,
+        this.chatroomBoxKeys.secretKey
+      );
+    } catch {
+      return null;
+    }
     if (!plain) return null;
     try {
       return { raw: plain, json: JSON.parse(plain) };
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Single-client encrypted frame: relay req, answer heartbeats, ignore benign types.
+   * @param {string} rawOuter
+   * @param {object} json outer `{ type: 'encrypted', nonce, payload }`
+   * @param {() => boolean} getBridgeConnected
+   * @returns {{ action: 'relay' | 'heartbeat' | 'ignore' | 'close', dec?: { raw: string, json: object } }}
+   */
+  handleSingleClientEncryptedFrame(rawOuter, json, getBridgeConnected) {
+    const dec = this.tryDecryptClientBox(rawOuter, json);
+    if (!dec || !dec.json || typeof dec.json !== 'object') {
+      return { action: 'close' };
+    }
+    const innerType = String(dec.json.type || '')
+      .trim()
+      .toLowerCase();
+    if (dec.json.type === 'req') {
+      return { action: 'relay', dec };
+    }
+    if (CLIENT_HEARTBEAT_INNER_TYPES.has(innerType)) {
+      if (process.env.OPENCLAW_ENCRYPTED_HEARTBEAT_REPLY !== '0') {
+        this.handleApplicationPing(dec.json, getBridgeConnected());
+      }
+      return { action: 'heartbeat' };
+    }
+    if (CLIENT_HEARTBEAT_IGNORE_TYPES.has(innerType)) {
+      return { action: 'ignore' };
+    }
+    logger.warn('single_client_encrypted_frame_ignored', {
+      clientId: this.clientId,
+      innerType: dec.json.type,
+      traceId: this.traceId,
+    });
+    return { action: 'ignore' };
+  }
+
+  /**
+   * Plaintext application ping (pre-box or dev); responds with JSON pong on the client WS.
+   * @param {object} json
+   * @param {boolean} [bridgeConnected]
+   */
+  handlePlaintextApplicationPing(json, bridgeConnected = false) {
+    this.notifyClientJson({
+      type: 'pong',
+      id: json.id,
+      ts: Date.now(),
+      bridgeConnected: Boolean(bridgeConnected),
+    });
   }
 
   /**
@@ -593,7 +653,13 @@ export class MachineRelaySession {
         ? String(json.params.agentId).trim()
         : '';
     const agentId = resolveGatewayTurnAgentId(fromParams || this.singleClientAgentId || undefined);
-    gateway.enqueueAgentTurn(userText, agentId);
+    const clientMessageId =
+      json.params &&
+      typeof json.params === 'object' &&
+      json.params.clientMessageId != null
+        ? String(json.params.clientMessageId).trim()
+        : '';
+    gateway.enqueueAgentTurn(userText, agentId, clientMessageId || undefined);
     return true;
   }
 

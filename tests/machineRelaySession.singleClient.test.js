@@ -210,6 +210,27 @@ describe('MachineRelaySession single-client mode', () => {
     session.destroy();
   });
 
+  it('tryDecryptClientBox returns null on malformed box frame without throwing', () => {
+    const clientWs = { readyState: 1, send() {} };
+    const session = new MachineRelaySession({
+      clientId: 't2b',
+      clientWs,
+      keyPair,
+      bridgeMode: false,
+      config: baseConfig(),
+    });
+    session.chatroomBoxKeys = {
+      publicKey: serverBox.publicKey,
+      secretKey: serverBox.secretKey,
+      peerPublicKey: clientBox.publicKey,
+      peerPublicKeys: {},
+    };
+    const outer = { type: 'encrypted', nonce: '!!!', payload: '###' };
+    expect(() => session.tryDecryptClientBox(JSON.stringify(outer), outer)).not.toThrow();
+    expect(session.tryDecryptClientBox(JSON.stringify(outer), outer)).toBeNull();
+    session.destroy();
+  });
+
   it(
     'relays signed req to gateway and encrypts assistant reply',
     async () => {

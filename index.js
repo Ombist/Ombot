@@ -252,14 +252,10 @@ wss.on('connection', (clientWs, req) => {
     }
 
     if (SINGLE_CLIENT_MODE && json.type === 'encrypted') {
-      const dec = session.tryDecryptClientBox(raw, json);
-      if (dec && dec.json.type === 'ping') {
-        session.handleApplicationPing(dec.json, getActiveBridgeConnected());
-        return;
-      }
-      if (dec && dec.json.type === 'req') {
-        session.relaySignedReqToMiddleware(dec.raw, dec.json);
-      } else if (String(process.env.OPENCLAW_STRICT_PAIRING_PROFILE || '1') !== '0') {
+      const frame = session.handleSingleClientEncryptedFrame(raw, json, getActiveBridgeConnected);
+      if (frame.action === 'relay' && frame.dec) {
+        session.relaySignedReqToMiddleware(frame.dec.raw, frame.dec.json);
+      } else if (frame.action === 'close' && String(process.env.OPENCLAW_STRICT_PAIRING_PROFILE || '1') !== '0') {
         session.notifyClientJson({ type: 'error', message: 'encrypted_frame_invalid' });
         try {
           clientWs.close(1008, 'encrypted_frame_invalid');
@@ -267,6 +263,11 @@ wss.on('connection', (clientWs, req) => {
           /* ignore */
         }
       }
+      return;
+    }
+
+    if (json.type === 'ping') {
+      session.handlePlaintextApplicationPing(json, getActiveBridgeConnected());
       return;
     }
 

@@ -148,6 +148,7 @@ export class GatewayAgentClient {
    * @param {string} opts.gatewayToken
    * @param {string} [opts.agentMethod]
    * @param {(text: string) => void} opts.onAssistantText
+   * @param {(clientMessageId: string) => void} [opts.onMessageAck]
    * @param {(err: Error) => void} [opts.onError]
    */
   constructor(opts) {
@@ -155,6 +156,7 @@ export class GatewayAgentClient {
     this.gatewayToken = opts.gatewayToken || '';
     this.agentMethod = (opts.agentMethod || 'agent').trim();
     this.onAssistantText = opts.onAssistantText;
+    this.onMessageAck = opts.onMessageAck || (() => {});
     this.onError = opts.onError || (() => {});
 
     /** @type {WebSocket | null} */
@@ -166,7 +168,7 @@ export class GatewayAgentClient {
     /** @type {Map<string, (msg: object) => void>} */
     this._pending = new Map();
     this._inFlight = false;
-    /** @type {Array<{ text: string, agentId: string }>} */
+    /** @type {Array<{ text: string, agentId: string, clientMessageId?: string }>} */
     this._queue = [];
     this._strictPairingProfile = process.env.OPENCLAW_STRICT_PAIRING_PROFILE !== '0';
     this._autoFallbackEnabled = ['1', 'true', 'yes'].includes(
@@ -213,9 +215,15 @@ export class GatewayAgentClient {
     return Boolean(this.gatewayWs && this.gatewayWs.readyState === 1 && this._gatewayConnected);
   }
 
-  enqueueAgentTurn(userText, agentId) {
+  enqueueAgentTurn(userText, agentId, clientMessageId) {
     const aid = resolveGatewayTurnAgentId(agentId);
-    this._queue.push({ text: userText, agentId: aid });
+    const cid =
+      clientMessageId == null ? '' : String(clientMessageId).trim();
+    this._queue.push({
+      text: userText,
+      agentId: aid,
+      clientMessageId: cid || undefined,
+    });
     this._drainQueue();
   }
 
@@ -645,7 +653,7 @@ export class GatewayAgentClient {
     this._inFlight = true;
     try {
       if (canSendGateway) {
-        await this._sendAgentTurn(item.text, item.agentId);
+        await this._sendAgentTurn(item.text, item.agentId, item.clientMessageId);
       } else if (this._autoFallbackEnabled) {
         await this._tryFallback(item.text, this._degradedReason || 'gateway_not_connected');
       }
@@ -658,8 +666,9 @@ export class GatewayAgentClient {
   /**
    * @param {string} userText
    * @param {string} agentId
+   * @param {string} [clientMessageId]
    */
-  _sendAgentTurn(userText, agentId) {
+  _sendAgentTurn(userText, agentId, clientMessageId) {
     return new Promise((resolve) => {
       if (!this.gatewayWs || this.gatewayWs.readyState !== 1) {
         resolve();
@@ -704,6 +713,9 @@ export class GatewayAgentClient {
             }
           } else {
             gatewayBridgeGateState.labels('provider').set(1);
+          }
+          if (isGatewayAcceptedAck(resMsg) && clientMessageId) {
+            this.onMessageAck(clientMessageId);
           }
           const t = assistantTextForConsumer(resMsg, this._replyDeduper);
           if (t) {
