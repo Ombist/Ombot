@@ -13,6 +13,28 @@
 - Readiness: `curl -fsS http://127.0.0.1:9090/readyz`
 - Metrics: `curl -fsS http://127.0.0.1:9090/metrics`
 
+## Ombers-route BOT: network isolation upgrade
+
+For machines provisioned with **`provision-headless.sh`** before loopback defaults, or if `ombot_ws_bind_ok=false` appears in provision summary:
+
+```bash
+# 1) Loopback-only WebSocket (default PORT=8082)
+grep -q '^OPENCLAW_WS_LISTEN_HOST=' /etc/ombot/ombot.env \
+  && sudo sed -i 's/^OPENCLAW_WS_LISTEN_HOST=.*/OPENCLAW_WS_LISTEN_HOST=127.0.0.1/' /etc/ombot/ombot.env \
+  || echo 'OPENCLAW_WS_LISTEN_HOST=127.0.0.1' | sudo tee -a /etc/ombot/ombot.env >/dev/null
+
+sudo systemctl restart ombist-ombot.service
+
+# 2) Health port: localhost + tailnet only (requires ombot-admin under /opt/ombot/bin)
+sudo /opt/ombot/bin/ombot-admin ombot health-port ensure-internal --json
+
+# 3) Verify
+ss -ltn | grep -E ':(8082|9090)\s'
+curl -fsS http://127.0.0.1:9090/healthz
+```
+
+Re-run iOS **新增機器** headless provision to apply firewall rules automatically. Confirm cloud security groups deny inbound **8082** and **9090** from the public internet.
+
 ## Incident Steps
 
 1. Confirm alert and scope.

@@ -234,3 +234,107 @@ ombist_ensure_node22() {
   echo "${label}: node version too old or missing (found $(node -v 2>/dev/null || echo none), require >= 22)" >&2
   exit 14
 }
+
+# Install ombot-admin CLI from a cloned Ombot repo (requires as_root).
+ombist_install_ombot_admin_from_repo() {
+  local repo_dir="${1:?}"
+  local bin_dir="${2:?}"
+  if [[ ! -f "${repo_dir}/tools/ombot-admin" ]]; then
+    return 1
+  fi
+  if ! declare -F as_root >/dev/null 2>&1; then
+    return 1
+  fi
+  as_root install -m 0755 "${repo_dir}/tools/ombot-admin" "${bin_dir}/ombot-admin"
+  as_root rm -rf "${bin_dir}/ombot-admin-lib"
+  as_root mkdir -p "${bin_dir}/ombot-admin-lib"
+  as_root cp -a "${repo_dir}/tools/ombot-admin-lib/." "${bin_dir}/ombot-admin-lib/"
+  as_root chown -R root:root "${bin_dir}/ombot-admin" "${bin_dir}/ombot-admin-lib"
+  return 0
+}
+
+# Deny inbound TCP to <port> from non-loopback. Prints: ufw|iptables|nft|missing
+ombist_firewall_deny_non_loopback_tcp() {
+  local port="${1:-}"
+  if [[ -z "${port}" || ! "${port}" =~ ^[0-9]+$ ]]; then
+    echo "missing"
+    return 1
+  fi
+  if ! declare -F as_root >/dev/null 2>&1; then
+    echo "missing"
+    return 1
+  fi
+  if command -v ufw >/dev/null 2>&1; then
+    as_root ufw deny in proto tcp to any port "${port}" >/dev/null 2>&1 || true
+    echo "ufw"
+    return 0
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    if ! as_root iptables -C INPUT -p tcp --dport "${port}" ! -s 127.0.0.1 -j DROP >/dev/null 2>&1; then
+      as_root iptables -I INPUT -p tcp --dport "${port}" ! -s 127.0.0.1 -j DROP
+    fi
+    echo "iptables"
+    return 0
+  fi
+  if command -v nft >/dev/null 2>&1; then
+    as_root nft add table inet ombist_fw >/dev/null 2>&1 || true
+    as_root nft add chain inet ombist_fw input "{ type filter hook input priority 0; policy accept; }" >/dev/null 2>&1 || true
+    as_root nft add rule inet ombist_fw input tcp dport "${port}" ip saddr != 127.0.0.1 drop >/dev/null 2>&1 || true
+    echo "nft"
+    return 0
+  fi
+  echo "missing"
+  return 1
+}
+
+# After ombot.service is up: WS loopback firewall, health-port ensure-internal, bind check.
+# Expects: OMBOT_PORT, OMBOT_HEALTH_PORT, OMBOT_BIN_DIR; optional FW_WARNING (append).
+# Sets: OMBIST_OMBOT_WS_BIND_OK, OMBIST_OMBOT_PORT_FW_MODE, OMBIST_HEALTH_PORT_FW_MODE
+ombist_apply_ombot_network_isolation() {
+  local port="${OMBOT_PORT:-8082}"
+  local health_port="${OMBOT_HEALTH_PORT:-9090}"
+  local bin_dir="${OMBOT_BIN_DIR:-}"
+
+  OMBIST_OMBOT_PORT_FW_MODE="$(ombist_firewall_deny_non_loopback_tcp "${port}")"
+  OMBIST_HEALTH_PORT_FW_MODE=""
+  OMBIST_OMBOT_WS_BIND_OK="false"
+
+  if [[ -x "${bin_dir}/ombot-admin" ]] && declare -F as_root >/dev/null 2>&1; then
+    local hp_line hp_ok
+    hp_line="$(as_root env OMBIST_HP="${health_port}" "${bin_dir}/ombot-admin" ombot health-port ensure-internal 2>/dev/null | tail -n1 || true)"
+    hp_ok="false"
+    if [[ "${hp_line}" == *'"ok":true'* ]] || [[ "${hp_line}" == *'"ok": true'* ]]; then
+      hp_ok="true"
+      OMBIST_HEALTH_PORT_FW_MODE="$(printf '%s' "${hp_line}" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p' | head -n1)"
+    fi
+    if [[ "${hp_ok}" != "true" ]]; then
+      if [[ -n "${FW_WARNING:-}" ]]; then
+        FW_WARNING="${FW_WARNING}; health_port_firewall_failed"
+      else
+        FW_WARNING="health_port_firewall_failed"
+      fi
+    fi
+  else
+    if [[ -n "${FW_WARNING:-}" ]]; then
+      FW_WARNING="${FW_WARNING}; ombot_admin_missing"
+    else
+      FW_WARNING="ombot_admin_missing"
+    fi
+  fi
+
+  if [[ "${OMBIST_OMBOT_PORT_FW_MODE}" == "missing" ]]; then
+    if [[ -n "${FW_WARNING:-}" ]]; then
+      FW_WARNING="${FW_WARNING}; ombot_port_firewall_tool_missing"
+    else
+      FW_WARNING="ombot_port_firewall_tool_missing"
+    fi
+  fi
+
+  if declare -F as_root >/dev/null 2>&1; then
+    local listen_row
+    listen_row="$(as_root ss -ltn 2>/dev/null | awk -v p=":${port}\$" '\$4 ~ p {print; exit}' || true)"
+    if [[ -n "${listen_row}" && "${listen_row}" == *"127.0.0.1:${port}"* ]]; then
+      OMBIST_OMBOT_WS_BIND_OK="true"
+    fi
+  fi
+}

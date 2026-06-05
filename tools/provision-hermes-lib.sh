@@ -158,6 +158,13 @@ ombist_provision_summary_hermes() {
   echo "hermes_gateway_active=${hm_state}"
   echo "hermes_gateway_state=${hm_state}"
   echo "ombot_state=${ombot_state}"
+  echo "ombot_loopback_port=${OMBOT_PORT:-8082}"
+  echo "ombot_ws_bind_ok=${OMBIST_OMBOT_WS_BIND_OK:-false}"
+  echo "ombot_port_firewall_mode=${OMBIST_OMBOT_PORT_FW_MODE:-}"
+  echo "health_port_firewall_mode=${OMBIST_HEALTH_PORT_FW_MODE:-}"
+  if [[ -n "${FW_WARNING:-}" ]]; then
+    echo "warning=${FW_WARNING}"
+  fi
   if [[ -n "${middleware_ws_url:-}" ]]; then
     echo "middleware_ws_url=${middleware_ws_url}"
   elif [[ -n "${MW_URL:-}" ]]; then

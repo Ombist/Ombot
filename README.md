@@ -153,8 +153,9 @@ PORT=8080 MIDDLEWARE_WS_URL=ws://127.0.0.1:8081/ws OPENCLAW_REQUIRE_MIDDLEWARE_T
 - **秘密與設定面**：Loopback Gateway token 等放在 **`20-gateway-security.json`** 片段（佈署時生成）；LLM 供應商金鑰優先經 **`ombot-admin route sync`** 的 `SYNC_OPENCLAW_AUTH_B64` 寫入 **`~/.openclaw/agents/<id>/agent/auth-profiles.json`**（不進 `openclaw.json`）；`OPENAI_*` 等亦可落在 **`ombot.env`**（**`ombot-admin openai env apply` 只改 `ombot.env`，不會改寫 runtime `openclaw.json`**；代理 **model** 仍由 `route sync` 的 agents patch 或片段／compose 決定）。同一 provider **建議只選一種落地**（auth-profile **或** env），避免雙份；`ombot-admin gateway config-drift` 可回報片段 hash、合成 hash 與磁碟是否一致、以及 env 與 auth profile 重疊等警告。
 - Ombot 環境寫入 `/etc/ombot/ombot.env`（含 `OPENCLAW_FRAGMENTS_DIR` 等）。
 - 建立 `systemd` 單元：`ombist-openclaw-gateway.service`、`ombist-ombot.service`（皆以 `User=ombot` 執行）。
+- **BOT 網路隔離（與單 bot 對齊）**：`/etc/ombot/ombot.env` 寫入 **`OPENCLAW_WS_LISTEN_HOST=127.0.0.1`**（`/ws` 不對公網監聽；iOS 仍經 Ombers，不在 BOT 機上加 Nginx）。佈署會安裝 **`ombot-admin`**，對 **`PORT`（預設 8082）** 套用非 loopback 入站拒絕，並執行 **`ombot-admin ombot health-port ensure-internal`**（`HEALTH_PORT` 預設 9090：僅 localhost + Tailscale tailnet，拒絕公網）。
 - 嘗試啟用主機防火牆（`ufw` / `iptables` / `nft`）封鎖外部入站 `tcp/18789`；若缺少工具，摘要會回 `warning=firewall_tool_missing`（降級安全模式）。
-- 腳本會輸出 `PROVISION_SUMMARY_BEGIN/END` 區段，含 `gateway_bind_ok`、service 狀態、`firewall_mode`，供 iOS 顯示成功或警告。
+- 腳本會輸出 `PROVISION_SUMMARY_BEGIN/END` 區段，含 `gateway_bind_ok`、`ombot_ws_bind_ok`、`ombot_port_firewall_mode`、`health_port_firewall_mode`、service 狀態、`firewall_mode`，供 iOS 顯示成功或警告。
 - 若修改核心佈署腳本，建議先跑 `tools/check-provision-sync.sh`，確認 `Ombot/tools` 與 `Ombist_IOS/Resources` 兩份核心腳本保持同步。
 
 必要環境變數：`RELAY_HOST`、`MACHINE_PORT`、`OPENCLAW_MACHINE_SEED`；可選 **`MIDDLEWARE_SCHEME`**（預設 **`wss`**；舊環境若 Ombers 前無 TLS，須明確設 `MIDDLEWARE_SCHEME=ws` 並確保 `OPENCLAW_REQUIRE_MIDDLEWARE_TLS=0`）、`OMBOT_GIT_URL`、`MIDDLEWARE_AUTH_TOKEN`、`OPENCLAW_GATEWAY_TOKEN`。僅支援 **Linux**，且需 root 或 passwordless sudo。生產路徑請在 Ombers **MACHINE** 對外埠上 TLS（Nginx 終止或 `OMBERS_USE_TLS`），否則 `wss://` 無法握手。
@@ -210,7 +211,8 @@ Prometheus：`ombot_hermes_bridge_connected`、`ombot_hermes_bridge_errors_total
 | Env | Default | Description |
 |-----|---------|-------------|
 | `PORT` | 8080 | WS server listen port |
-| `HEALTH_PORT` | `8082` | HTTP health/metrics port（預設刻意避開 Ombers `MACHINE_PORT` 8081） |
+| `OPENCLAW_WS_LISTEN_HOST` | `0.0.0.0` | Bind address for `/ws`；**headless / single-bot 佈署預設 `127.0.0.1`**（僅本機；公網經 Nginx 或 Ombers，不直連 Ombot） |
+| `HEALTH_PORT` | `8082` | HTTP health/metrics port（headless/single-bot 佈署常用 **9090**；headless 佈署會以 `ombot-admin health-port ensure-internal` 限制入站為 localhost + tailnet） |
 | `MIDDLEWARE_WS_URL` | wss://127.0.0.1:8081/ws | Middleware **基底**（須以 `/ws` 結尾）；多路時會再連線至 `…/ws/<sessionKey>` |
 | `MIDDLEWARE_AUTH_TOKEN` | (empty) | 連到 Middleware 時的 Bearer token（優先走 `Authorization` header；失敗時可退回 query token） |
 | `MIDDLEWARE_TLS_CLIENT_CERT_PATH` | (empty) | 若 ingress 要求 **mTLS**：指向 **client** 憑證 PEM（與 key 成對設定；見 monorepo `Ombers_Communicator/docs/nginx-mtls-ingress.md`） |
@@ -288,7 +290,7 @@ Prometheus: `ombot_gateway_loopback_reachable` (0/1) updated by watchdog and `/r
 
 ## Protocol
 
-- Listens on `0.0.0.0:PORT/ws`.
+- Listens on `OPENCLAW_WS_LISTEN_HOST:PORT/ws`（預設 `0.0.0.0`；**佈署預設 `127.0.0.1`**）。
 - **App 直連（本地 OpenClaw）**：送 `{ type: 'register_public_key', publicKey: '<hex>', protocolVersion, capabilities, appAttestationEnabled }`；server 回 `{ type: 'registered', serverPublicKey: '<hex>', protocolVersion, capabilities }`。
 - **經 Middleware（Phone E2E）**：Phone 與 Machine 須連到同一 **Middleware session**（URL `…/ws/<sessionKey>`，`sessionKey` 由 `agentId` + `conversationId` 算出；若帶 `participantId`，則改為三元組計算）。本地 OpenClaw 客戶端在 `register_public_key` 應帶 **`conversationId`**（及選填 `agentId`、`participantId`），Machine 才能連上對應 tunnel。Phone 送 `register_public_key` 含 `boxPublicKey` 等；Machine 回 `peer_public_key`；之後訊息以 `encrypted` 格式加解密。若客戶端未帶 `conversationId`／`chatroomId`，Machine 仍連 **legacy** `…/ws`（單對單）。
 - App 送 `{ type: 'req', id, method: 'agent', protocolVersion, capabilities, params: { message, clientMessageId }, timestamp, nonce, signature }`；server 驗證後轉發。

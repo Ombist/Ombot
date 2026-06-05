@@ -4,7 +4,7 @@
 # 2) Ombot repo + production deps
 # 3) OmbRouter: clone, build, npm -g (no OpenClaw plugin registration); skip if OMBIST_INSTALL_OMBROUTER=0
 # 4) systemd: start gateway first, then Ombot (After= gateway)
-# - host firewall guard for 18789
+# - host firewall guard for 18789; Ombot WS loopback + health-port internal (localhost + tailnet)
 
 set -euo pipefail
 
@@ -184,6 +184,18 @@ else
 fi
 run_as_ombot "export NVM_DIR='${OMBOT_HOME}/.nvm'; source \"\${NVM_DIR}/nvm.sh\"; nvm use 22 >/dev/null; npm --prefix '${OMBOT_REPO_DIR}' install --omit=dev"
 
+if declare -F ombist_install_ombot_admin_from_repo >/dev/null 2>&1; then
+  echo "ombist-provision: installing ombot-admin to ${OMBOT_BIN_DIR}..."
+  ombist_install_ombot_admin_from_repo "${OMBOT_REPO_DIR}" "${OMBOT_BIN_DIR}" || true
+elif [[ -f "${OMBOT_REPO_DIR}/tools/ombot-admin" ]]; then
+  echo "ombist-provision: installing ombot-admin to ${OMBOT_BIN_DIR}..."
+  as_root install -m 0755 "${OMBOT_REPO_DIR}/tools/ombot-admin" "${OMBOT_BIN_DIR}/ombot-admin"
+  as_root rm -rf "${OMBOT_BIN_DIR}/ombot-admin-lib"
+  as_root mkdir -p "${OMBOT_BIN_DIR}/ombot-admin-lib"
+  as_root cp -a "${OMBOT_REPO_DIR}/tools/ombot-admin-lib/." "${OMBOT_BIN_DIR}/ombot-admin-lib/"
+  as_root chown -R root:root "${OMBOT_BIN_DIR}/ombot-admin" "${OMBOT_BIN_DIR}/ombot-admin-lib"
+fi
+
 : "${OMBIST_INSTALL_OMBROUTER:=0}"
 if [[ "${OMBIST_INSTALL_OMBROUTER}" != "0" ]]; then
   echo "ombist-provision: cloning/building OmbRouter (without OpenClaw plugin registration)..."
@@ -336,6 +348,7 @@ fi
 {
   echo "PORT=${OMBOT_PORT}"
   echo "HEALTH_PORT=${OMBOT_HEALTH_PORT}"
+  echo "OPENCLAW_WS_LISTEN_HOST=127.0.0.1"
   echo "MIDDLEWARE_WS_URL=${MW_URL}"
   echo "OPENCLAW_FRAGMENTS_DIR=${OPENCLAW_FRAGMENTS_DIR}"
   echo "OPENCLAW_MACHINE_SEED=${OPENCLAW_MACHINE_SEED}"
@@ -436,6 +449,10 @@ EOF
   require_active_service "ombist-hermes-gateway.service"
   require_active_service "ombist-ombot.service"
   ombist_hermes_firewall_guard
+  echo "ombist-provision: Ombot network isolation (loopback WS + health port)..."
+  if declare -F ombist_apply_ombot_network_isolation >/dev/null 2>&1; then
+    ombist_apply_ombot_network_isolation
+  fi
   ombist_provision_summary_hermes
   exit 0
 fi
@@ -552,8 +569,21 @@ as_root systemctl restart ombist-ombot.service
 require_active_service "ombist-openclaw-gateway.service"
 require_active_service "ombist-ombot.service"
 
+echo "ombist-provision: Ombot network isolation (loopback WS + health port)..."
+OMBIST_OMBOT_WS_BIND_OK="false"
+OMBIST_OMBOT_PORT_FW_MODE=""
+OMBIST_HEALTH_PORT_FW_MODE=""
+if declare -F ombist_apply_ombot_network_isolation >/dev/null 2>&1; then
+  ombist_apply_ombot_network_isolation
+fi
+
 echo "ombist-provision: applying firewall guard for tcp/${OPENCLAW_GATEWAY_PORT}..."
-if command -v ufw >/dev/null 2>&1; then
+if declare -F ombist_firewall_deny_non_loopback_tcp >/dev/null 2>&1; then
+  FW_MODE="$(ombist_firewall_deny_non_loopback_tcp "${OPENCLAW_GATEWAY_PORT}")"
+  if [[ "${FW_MODE}" == "missing" ]]; then
+    FW_WARNING="${FW_WARNING:+$FW_WARNING; }firewall_tool_missing"
+  fi
+elif command -v ufw >/dev/null 2>&1; then
   as_root ufw deny in proto tcp to any port "${OPENCLAW_GATEWAY_PORT}" >/dev/null 2>&1 || true
   FW_MODE="ufw"
 elif command -v iptables >/dev/null 2>&1; then
@@ -567,7 +597,7 @@ elif command -v nft >/dev/null 2>&1; then
   as_root nft add rule inet ombist_fw input tcp dport "${OPENCLAW_GATEWAY_PORT}" ip saddr != 127.0.0.1 drop >/dev/null 2>&1 || true
   FW_MODE="nft"
 else
-  FW_WARNING="firewall_tool_missing"
+  FW_WARNING="${FW_WARNING:+$FW_WARNING; }firewall_tool_missing"
 fi
 
 GW_STATE="$(as_root systemctl is-active ombist-openclaw-gateway.service || true)"
@@ -587,6 +617,10 @@ echo "gateway_state=${GW_STATE}"
 echo "ombot_state=${OMBOT_STATE}"
 echo "ombrouter_repo=${OMBROUTER_REPO_DIR}"
 echo "middleware_ws_url=${MW_URL}"
+echo "ombot_loopback_port=${OMBOT_PORT}"
+echo "ombot_ws_bind_ok=${OMBIST_OMBOT_WS_BIND_OK:-false}"
+echo "ombot_port_firewall_mode=${OMBIST_OMBOT_PORT_FW_MODE:-}"
+echo "health_port_firewall_mode=${OMBIST_HEALTH_PORT_FW_MODE:-}"
 echo "firewall_mode=${FW_MODE}"
 if [[ -n "${FW_WARNING}" ]]; then
   echo "warning=${FW_WARNING}"
